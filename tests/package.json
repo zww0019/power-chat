@@ -1,0 +1,16 @@
+{
+  "name": "@power-chat/tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "vitest": "^2.1.2",
+    "yaml": "^2.5.1"
+  }
+}

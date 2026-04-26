@@ -1,0 +1,836 @@
+openapi: 3.0.3
+info:
+  title: 思考画布 (Power Chat) API
+  version: 0.1.0
+  description: |
+    思考画布 MVP 的 API 契约。
+
+    **架构注意：**
+    - MVP 是 Electron 桌面应用（Stage 0 决策），实际部署时本契约由 Electron 主进程实现
+    - 当前 Stage 3 用 Express mock-server 实现（端口 3001）
+    - Stage 6 切到 Electron 主进程时，HTTP 调用换成 IPC，但**响应 schema 完全一致**
+    - 流式响应使用 SSE（OpenAI 兼容协议风格的 reasoning + content 双路）
+
+    **核心不变量约束（追溯 docs/02-domain-model.md §4）：**
+    - INV-2: 提炼节点上的对话上下文不展开原节点完整内容
+    - INV-3: 分支边的 inheritedUntilSequence immutable
+    - INV-7: streaming 节点不可删除
+    - INV-11: reasoning_content 不入下游对话/提炼/标题输入
+servers:
+  - url: http://localhost:3001
+    description: Stage 3 mock-server
+  - url: ipc://power-chat
+    description: Stage 6 Electron 主进程（占位 URL，实际走 IPC）
+
+tags:
+  - name: canvas
+    description: 画布读写
+  - name: nodes
+    description: 节点 CRUD + 分支
+  - name: messages
+    description: 节点内消息（含 SSE 流式）
+  - name: refine
+    description: 提炼任务
+  - name: settings
+    description: LLM 配置（Stage 6 实现）
+
+paths:
+  /api/canvas:
+    get:
+      tags: [canvas]
+      summary: 获取画布完整快照（首屏全量）
+      operationId: getCanvas
+      responses:
+        '200':
+          description: 画布数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanvasSnapshot'
+              examples:
+                empty:
+                  summary: 空画布（首次启动）
+                  $ref: '#/components/examples/CanvasSnapshotEmpty'
+                with_data:
+                  summary: 已有研究内容（journey-1 中段）
+                  $ref: '#/components/examples/CanvasSnapshotJourney1'
+
+  /api/nodes:
+    post:
+      tags: [nodes]
+      summary: 创建对话节点（双击空白触发）
+      operationId: createNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNodeRequest'
+            examples:
+              dialogue_at_origin:
+                value:
+                  positionX: 0
+                  positionY: -200
+                  type: dialogue
+              refined_node_via_refine:
+                summary: （仅 mock 直接调用；实际走 /refine）
+                value:
+                  positionX: 440
+                  positionY: 50
+                  type: refined
+      responses:
+        '201':
+          description: 节点已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+              examples:
+                normal:
+                  $ref: '#/components/examples/NodeDialogueExample'
+                refined:
+                  $ref: '#/components/examples/NodeRefinedExample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/nodes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/NodeIdPath'
+    patch:
+      tags: [nodes]
+      summary: 更新节点（位置 / 折叠 / 标题）
+      operationId: patchNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchNodeRequest'
+            examples:
+              move:
+                summary: 拖动节点（旅程3 步骤1）
+                value:
+                  positionX: 1500
+                  positionY: 1100
+              collapse:
+                summary: 折叠节点（PRD-FIX-1，用户主动）
+                value:
+                  collapsed: true
+              title_update:
+                summary: 标题自动生成（每 3 条消息触发一次）
+                value:
+                  title: 新茶饮出海四阻力辨析
+      responses:
+        '200':
+          description: 节点已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 删除冲突（INV-7：streaming 节点不可删除/某些字段不可改）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags: [nodes]
+      summary: 删除节点（级联断开边，不删子孙 — Q2-3 选 B）
+      operationId: deleteNode
+      responses:
+        '204':
+          description: 已删除
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 节点正在流式输出（INV-7）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/nodes/branch:
+    post:
+      tags: [nodes]
+      summary: 从某条 AI 消息分支出新节点
+      description: |
+        服务端在父节点的对话中找到 fromMessageId 这条消息，
+        以该消息为快照点（写入 inherited_until_sequence）创建子节点。
+        子节点的对话上下文 = 父节点截至该消息的所有消息。
+      operationId: branchNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BranchRequest'
+            examples:
+              branch_from_first_reply:
+                summary: 从父节点第一条 AI 回复分支（旅程1 步骤7-8）
+                value:
+                  parentNodeId: n_abc123
+                  fromMessageId: m_def456
+      responses:
+        '201':
+          description: 新节点和边
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node, edge]
+                properties:
+                  node:
+                    $ref: '#/components/schemas/Node'
+                  edge:
+                    $ref: '#/components/schemas/Edge'
+              examples:
+                normal:
+                  $ref: '#/components/examples/BranchResultExample'
+
+  /api/nodes/{id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/NodeIdPath'
+    post:
+      tags: [messages]
+      summary: 发送用户消息并流式接收 AI 回复（SSE）
+      description: |
+        请求体含 user 消息内容。响应是 `text/event-stream`，
+        每个事件 data 字段是 JSON：
+        - `{type: "reasoning", delta: "…"}` 思考内容增量（仅思考模式开启时）
+        - `{type: "content", delta: "…"}` 正文内容增量
+        - `{type: "done", messageId: "…"}` 流式完成
+        - `{type: "error", error: "…"}` 流式错误（连接保持，但前端应显示错误气泡）
+
+        **INV-11**：reasoning 事件的内容仅用于 UI 展示，不会被后端
+        放入下次对话上下文、不参与提炼输入、不计入 token 估算。
+      operationId: streamMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+            examples:
+              first_question:
+                summary: 主问题（旅程1 步骤2）
+                value:
+                  content: 我在写一份"中国新茶饮 2026 出海机会"的深度报告...
+              follow_up:
+                summary: 追问
+                value:
+                  content: 第 2 点"品牌叙事在欧美遇冷"——你是说茶饮品类天然不适合欧美？
+      responses:
+        '200':
+          description: SSE 流，事件格式见 description
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE 流，每事件是一行 'data: <json>' 后跟空行"
+              examples:
+                reasoning_then_content:
+                  summary: 完整一轮（reasoning 先于 content）
+                  value: |
+                    data: {"type":"reasoning","delta":"用户在写报告..."}
+
+                    data: {"type":"reasoning","delta":"...需要从供应链..."}
+
+                    data: {"type":"content","delta":"四个主要阻力，"}
+
+                    data: {"type":"content","delta":"按重要性排序：\n\n"}
+
+                    data: {"type":"done","messageId":"m_abc"}
+                error_event:
+                  summary: 流式中错误（旅程2 sad-1）
+                  value: |
+                    data: {"type":"content","delta":"四个主要阻力，按重要"}
+
+                    data: {"type":"error","error":"upstream_disconnect"}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: 上下文超长拦截（Q3-3）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextOverflowError'
+              examples:
+                overflow:
+                  value:
+                    error: context_overflow
+                    estimatedTokens: 56000
+                    modelLimit: 64000
+                    suggestion: 建议先选中相关节点做一次"提炼"，在提炼节点上继续讨论。
+
+  /api/refine:
+    post:
+      tags: [refine]
+      summary: 创建提炼任务，返回提炼节点 + 流式拉取 URL
+      description: |
+        提炼是两步操作：
+        1. POST /api/refine → 立即返回 node + edges + streamUrl
+        2. GET {streamUrl} → SSE 流式拉取提炼内容
+
+        分两步是为了让前端先把节点和边渲染出来（用户立即看到结果产生），
+        再异步流式填充提炼内容。
+      operationId: createRefine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefineRequest'
+            examples:
+              with_intent:
+                summary: 指定意图（旅程1 步骤17）
+                value:
+                  sourceNodeIds: [n_a, n_b, n_c]
+                  intentQuestion: 供应链、监管、品牌叙事三方面问题如何整体影响一个新茶饮品牌选择出海首站？给出一个决策框架。
+              comprehensive:
+                summary: 综合性提炼（intent 留空）
+                value:
+                  sourceNodeIds: [n_a, n_b]
+                  intentQuestion: null
+      responses:
+        '201':
+          description: 提炼节点创建成功，需用 streamUrl 拉取内容
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefineResult'
+              examples:
+                normal:
+                  $ref: '#/components/examples/RefineResultExample'
+
+  /api/refine/stream/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+        description: 由 POST /api/refine 返回的一次性 token（消费后失效）
+    get:
+      tags: [refine]
+      summary: 拉取提炼任务的流式输出
+      operationId: streamRefine
+      responses:
+        '200':
+          description: SSE 流，事件格式同 /api/nodes/{id}/messages
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404':
+          description: token 不存在或已消费
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/settings:
+    get:
+      tags: [settings]
+      summary: 获取 LLM 配置
+      operationId: getSettings
+      responses:
+        '200':
+          description: 当前设置（apiKey 脱敏）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+              examples:
+                configured:
+                  $ref: '#/components/examples/SettingsConfiguredExample'
+                empty:
+                  $ref: '#/components/examples/SettingsEmptyExample'
+
+    put:
+      tags: [settings]
+      summary: 更新 LLM 配置（写入 OS keychain）
+      operationId: putSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsWriteRequest'
+      responses:
+        '200':
+          description: 设置已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+
+  /api/settings/test:
+    post:
+      tags: [settings]
+      summary: 测试 LLM 端点连通性
+      description: |
+        实际行为（D1 决策）：调用配置的 baseURL + `/v1/models`，
+        OpenAI 兼容协议下这是最低成本的可用性测试。
+      operationId: testSettings
+      responses:
+        '200':
+          description: 端点可用
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  modelsAvailable: { type: array, items: { type: string } }
+              examples:
+                ok:
+                  value:
+                    ok: true
+                    modelsAvailable: [deepseek-reasoner, deepseek-chat]
+        '502':
+          description: 端点不可达
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  parameters:
+    NodeIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^n_[a-z0-9]+$'
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    CanvasSnapshot:
+      type: object
+      required: [canvas, nodes, edges, messages]
+      properties:
+        canvas:
+          $ref: '#/components/schemas/Canvas'
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/Node' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/Edge' }
+        messages:
+          type: array
+          items: { $ref: '#/components/schemas/Message' }
+
+    Canvas:
+      type: object
+      required: [id, viewportX, viewportY, viewportZoom, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          example: canvas_1
+        viewportX: { type: number, example: 0 }
+        viewportY: { type: number, example: -200 }
+        viewportZoom:
+          type: number
+          minimum: 0.25
+          maximum: 2.0
+          example: 1.0
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Node:
+      type: object
+      required: [id, canvasId, type, positionX, positionY, width, collapsed, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^n_[a-z0-9]+$'
+          example: n_abc123
+        canvasId: { type: string, example: canvas_1 }
+        type:
+          type: string
+          enum: [dialogue, refined]
+        positionX: { type: number }
+        positionY: { type: number }
+        width:
+          type: number
+          example: 380
+        collapsed: { type: boolean }
+        title:
+          type: string
+          nullable: true
+          maxLength: 30
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastFocusedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    Edge:
+      type: object
+      required: [id, parentNodeId, childNodeId, edgeKind, createdAt]
+      properties:
+        id:
+          type: string
+          pattern: '^e_[a-z0-9]+$'
+        parentNodeId: { type: string }
+        childNodeId: { type: string }
+        edgeKind:
+          type: string
+          enum: [branch, refine_input]
+          description: |
+            branch: 分支边（单父对话节点）
+            refine_input: 提炼输入边（指向多父提炼节点）
+        inheritedUntilSequence:
+          type: integer
+          nullable: true
+          description: |
+            分支边：父节点 sequence 截止点（INV-3 immutable）
+            提炼边：null
+        createdAt: { type: string, format: date-time }
+
+    Message:
+      type: object
+      required: [id, nodeId, role, content, sequence, status, createdAt]
+      properties:
+        id: { type: string, pattern: '^m_[a-z0-9]+$' }
+        nodeId: { type: string }
+        role:
+          type: string
+          enum: [user, assistant]
+        content: { type: string }
+        reasoningContent:
+          type: string
+          nullable: true
+          description: 思考模式产出（INV-11：不入下游）
+        sequence: { type: integer, minimum: 0 }
+        status:
+          type: string
+          enum: [complete, streaming, partial, error]
+        wasResumed:
+          type: boolean
+          default: false
+          description: 是否经"继续生成"恢复
+        createdAt: { type: string, format: date-time }
+
+    Settings:
+      type: object
+      required: [llmBaseUrl, llmModel, llmApiKey, thinkingModeEnabled, privacyAcknowledged]
+      properties:
+        llmBaseUrl:
+          type: string
+          example: https://api.deepseek.com/v1
+        llmModel:
+          type: string
+          example: deepseek-reasoner
+        llmApiKey:
+          type: string
+          description: GET 时返回脱敏值（如 sk-•••3a9f）；PUT 接受真实值
+          example: sk-•••3a9f
+        thinkingModeEnabled: { type: boolean }
+        privacyAcknowledged: { type: boolean }
+
+    CreateNodeRequest:
+      type: object
+      required: [positionX, positionY]
+      properties:
+        positionX: { type: number }
+        positionY: { type: number }
+        type:
+          type: string
+          enum: [dialogue, refined]
+          default: dialogue
+
+    PatchNodeRequest:
+      type: object
+      properties:
+        positionX: { type: number }
+        positionY: { type: number }
+        collapsed: { type: boolean }
+        title:
+          type: string
+          maxLength: 30
+
+    BranchRequest:
+      type: object
+      required: [parentNodeId, fromMessageId]
+      properties:
+        parentNodeId: { type: string }
+        fromMessageId: { type: string }
+
+    SendMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 10000
+
+    RefineRequest:
+      type: object
+      required: [sourceNodeIds]
+      properties:
+        sourceNodeIds:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { type: string }
+        intentQuestion:
+          type: string
+          nullable: true
+          maxLength: 500
+
+    RefineResult:
+      type: object
+      required: [node, edges, streamUrl]
+      properties:
+        node:
+          $ref: '#/components/schemas/Node'
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/Edge' }
+        streamUrl:
+          type: string
+          example: /api/refine/stream/abc123token
+
+    SettingsWriteRequest:
+      type: object
+      properties:
+        llmBaseUrl: { type: string }
+        llmModel: { type: string }
+        llmApiKey: { type: string }
+        thinkingModeEnabled: { type: boolean }
+        privacyAcknowledged: { type: boolean }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    ContextOverflowError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            estimatedTokens: { type: integer }
+            modelLimit: { type: integer }
+            suggestion: { type: string }
+
+  examples:
+    CanvasSnapshotEmpty:
+      summary: 空画布
+      value:
+        canvas:
+          id: canvas_1
+          viewportX: 0
+          viewportY: -200
+          viewportZoom: 1.0
+          createdAt: '2026-04-25T15:30:00Z'
+          updatedAt: '2026-04-25T15:30:00Z'
+        nodes: []
+        edges: []
+        messages: []
+
+    CanvasSnapshotJourney1:
+      summary: 旅程1 中段（已分支 + 提炼）
+      value:
+        canvas:
+          id: canvas_1
+          viewportX: 0
+          viewportY: -200
+          viewportZoom: 1.0
+          createdAt: '2026-04-25T10:00:00Z'
+          updatedAt: '2026-04-25T11:30:00Z'
+        nodes:
+          - id: n_root
+            canvasId: canvas_1
+            type: dialogue
+            positionX: 0
+            positionY: -200
+            width: 380
+            collapsed: false
+            title: 新茶饮出海四阻力辨析
+            createdAt: '2026-04-25T10:00:00Z'
+            updatedAt: '2026-04-25T10:15:00Z'
+            lastFocusedAt: '2026-04-25T10:15:00Z'
+          - id: n_branch1
+            canvasId: canvas_1
+            type: dialogue
+            positionX: 440
+            positionY: -200
+            width: 380
+            collapsed: false
+            title: 供应链原料替代方案
+            createdAt: '2026-04-25T10:30:00Z'
+            updatedAt: '2026-04-25T10:45:00Z'
+            lastFocusedAt: '2026-04-25T10:45:00Z'
+          - id: n_refined
+            canvasId: canvas_1
+            type: refined
+            positionX: 440
+            positionY: 50
+            width: 380
+            collapsed: false
+            title: 出海首站决策框架
+            createdAt: '2026-04-25T11:20:00Z'
+            updatedAt: '2026-04-25T11:25:00Z'
+            lastFocusedAt: '2026-04-25T11:30:00Z'
+        edges:
+          - id: e_b1
+            parentNodeId: n_root
+            childNodeId: n_branch1
+            edgeKind: branch
+            inheritedUntilSequence: 1
+            createdAt: '2026-04-25T10:30:00Z'
+          - id: e_r1
+            parentNodeId: n_root
+            childNodeId: n_refined
+            edgeKind: refine_input
+            inheritedUntilSequence: null
+            createdAt: '2026-04-25T11:20:00Z'
+          - id: e_r2
+            parentNodeId: n_branch1
+            childNodeId: n_refined
+            edgeKind: refine_input
+            inheritedUntilSequence: null
+            createdAt: '2026-04-25T11:20:00Z'
+        messages:
+          - id: m_u1
+            nodeId: n_root
+            role: user
+            content: 我在写一份"中国新茶饮 2026 出海机会"的深度报告...
+            reasoningContent: null
+            sequence: 0
+            status: complete
+            createdAt: '2026-04-25T10:00:30Z'
+          - id: m_a1
+            nodeId: n_root
+            role: assistant
+            content: 四个主要阻力，按重要性排序...
+            reasoningContent: 用户在写报告，要的是结构化分析...
+            sequence: 1
+            status: complete
+            createdAt: '2026-04-25T10:01:00Z'
+
+    NodeDialogueExample:
+      summary: 普通对话节点
+      value:
+        id: n_abc123
+        canvasId: canvas_1
+        type: dialogue
+        positionX: 0
+        positionY: -200
+        width: 380
+        collapsed: false
+        title: null
+        createdAt: '2026-04-25T15:30:00Z'
+        updatedAt: '2026-04-25T15:30:00Z'
+        lastFocusedAt: '2026-04-25T15:30:00Z'
+
+    NodeRefinedExample:
+      summary: 提炼节点
+      value:
+        id: n_xyz789
+        canvasId: canvas_1
+        type: refined
+        positionX: 440
+        positionY: 50
+        width: 380
+        collapsed: false
+        title: 出海首站决策框架
+        createdAt: '2026-04-25T11:20:00Z'
+        updatedAt: '2026-04-25T11:25:00Z'
+        lastFocusedAt: '2026-04-25T11:25:00Z'
+
+    BranchResultExample:
+      summary: 分支返回结果
+      value:
+        node:
+          id: n_branch_new
+          canvasId: canvas_1
+          type: dialogue
+          positionX: 440
+          positionY: -200
+          width: 380
+          collapsed: false
+          title: null
+          createdAt: '2026-04-25T10:30:00Z'
+          updatedAt: '2026-04-25T10:30:00Z'
+          lastFocusedAt: '2026-04-25T10:30:00Z'
+        edge:
+          id: e_branch_new
+          parentNodeId: n_root
+          childNodeId: n_branch_new
+          edgeKind: branch
+          inheritedUntilSequence: 1
+          createdAt: '2026-04-25T10:30:00Z'
+
+    RefineResultExample:
+      summary: 提炼任务创建（流式 URL 待消费）
+      value:
+        node:
+          id: n_refined_new
+          canvasId: canvas_1
+          type: refined
+          positionX: 440
+          positionY: 50
+          width: 380
+          collapsed: false
+          title: 提炼节点
+          createdAt: '2026-04-25T11:20:00Z'
+          updatedAt: '2026-04-25T11:20:00Z'
+          lastFocusedAt: '2026-04-25T11:20:00Z'
+        edges:
+          - id: e_refine_1
+            parentNodeId: n_a
+            childNodeId: n_refined_new
+            edgeKind: refine_input
+            inheritedUntilSequence: null
+            createdAt: '2026-04-25T11:20:00Z'
+          - id: e_refine_2
+            parentNodeId: n_b
+            childNodeId: n_refined_new
+            edgeKind: refine_input
+            inheritedUntilSequence: null
+            createdAt: '2026-04-25T11:20:00Z'
+        streamUrl: /api/refine/stream/k3jds82mx
+
+    SettingsConfiguredExample:
+      summary: 已配置（GET 时返回脱敏 apiKey）
+      value:
+        llmBaseUrl: https://api.deepseek.com/v1
+        llmModel: deepseek-reasoner
+        llmApiKey: sk-•••3a9f
+        thinkingModeEnabled: true
+        privacyAcknowledged: true
+
+    SettingsEmptyExample:
+      summary: 首次启动（旅程2 sad-5）
+      value:
+        llmBaseUrl: ''
+        llmModel: ''
+        llmApiKey: ''
+        thinkingModeEnabled: false
+        privacyAcknowledged: false

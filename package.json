@@ -1,0 +1,21 @@
+{
+  "name": "power-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "思考画布 (Thinking Canvas) - 为深度思考而设计的对话画布",
+  "scripts": {
+    "dev": "concurrently -n mock,proto -c blue,green \"pnpm -C mock-server dev\" \"pnpm -C prototype dev\"",
+    "dev:mock": "pnpm -C mock-server dev",
+    "dev:proto": "pnpm -C prototype dev",
+    "dev:electron": "concurrently -n vite,electron -c green,magenta \"pnpm -C prototype dev\" \"wait-on http://localhost:5173 && pnpm -C electron dev\"",
+    "type-check": "pnpm -C electron type-check && pnpm -C mock-server type-check",
+    "test": "POWER_CHAT_DB=/tmp/power-chat-test.json USE_MOCK_LLM=1 USE_MOCK_TOOLS=1 concurrently -k -s first -n mock,test -c blue,green \"pnpm -C mock-server dev\" \"wait-on http://localhost:3001/api/canvas && pnpm -C tests test\"",
+    "test:watch": "POWER_CHAT_DB=/tmp/power-chat-test.json USE_MOCK_LLM=1 USE_MOCK_TOOLS=1 concurrently -k -s first -n mock,test -c blue,green \"pnpm -C mock-server dev\" \"wait-on http://localhost:3001/api/canvas && pnpm -C tests test:watch\"",
+    "install:all": "pnpm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "wait-on": "^8.0.1"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

@@ -1,0 +1,5 @@
+packages:
+  - prototype
+  - mock-server
+  - tests
+  - electron

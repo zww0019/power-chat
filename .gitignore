@@ -1,0 +1,22 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+.env
+.env.local
+.vite/
+
+# 本地运行时数据（含 apiKey / tavilyApiKey 明文，D004 / R009 约束严格不入库）
+.data/
+
+# TypeScript 增量编译缓存
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+
+# Test 工具产出
+coverage/
+.jscpd-report/
