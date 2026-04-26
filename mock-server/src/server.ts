@@ -129,7 +129,8 @@ app.post('/api/nodes/:id/messages', async (req, res) => {
     res.end();
   } catch (e: any) {
     if (e instanceof ContextOverflowError) {
-      // 此时 SSE 头已发送，无法再返回 413。先发 error 事件给客户端。
+      // M5+ D021 起前置 token 守卫已撤销，此分支为 dead-defensive 路径——
+      // 保留以备未来重启守卫（real LLM API 仍会返回 context overflow，但走通用 catch）
       writeSSE(res, {
         type: 'error',
         error: `context_overflow: estimated=${e.estimatedTokens} limit=${e.modelLimit}`,
@@ -197,6 +198,18 @@ app.get('/api/__test__/streaming-info', (_req, res) => {
     return;
   }
   res.json({ streamingNodeIds: abortRegistry.getStreamingNodeIds() });
+});
+
+// === 测试辅助：读取 mockStream 最近一次入参 messages（仅 mock 模式开放）===
+// 让测试能跨进程（vitest 进程 vs mock-server 进程）观察 LLM 协议层入参，
+// 验证 reasoning_content 等字段是否按协议要求回传给下一轮调用
+app.get('/api/__test__/last-llm-messages', async (_req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    res.status(404).end();
+    return;
+  }
+  const fx = await import('../../src/modules/fixtures.js');
+  res.json({ messages: fx.getLastMockLLMMessages() });
 });
 
 // === 测试辅助：重置数据库 + 清 abort registry（仅 mock 模式开放）===

@@ -148,6 +148,11 @@ export async function* runAgentLoop(params: RunAgentLoopParams): AsyncIterable<S
     messages.push({
       role: 'assistant',
       content: round.contentBuf, // 工具调用前的 thought 性质内容
+      // 段内 sub-turn 必须携带 reasoning_content（R020b / E014）——
+      // DeepSeek-Reasoner native_tools 协议要求，不带会 400 invalid_request_error。
+      // `|| null` 而非直接 reasoningBuf：toOpenAIMessage 用 `if(m.reasoningContent)` falsy 守卫
+      // 跳过空字符串；若改为 undefined 则 JSON 序列化会漏掉字段，null 可显式占位
+      reasoningContent: round.reasoningBuf || null,
       toolCalls: round.toolCalls,
     });
 
@@ -172,6 +177,11 @@ interface OneRoundResult {
   passthroughEvents: StreamEvent[];
   // 本轮 content 累积（用于写入 assistant message）
   contentBuf: string;
+  // 本轮 reasoning 累积（用于段内回灌 assistant message 的 reasoning_content 字段）：
+  // DeepSeek-Reasoner 思考模式协议要求——段内（同一 turn 多 sub-turn 之间）assistant 历史的
+  // reasoning_content **必须**回传给后续调用，不传则 400 invalid_request_error。
+  // 详见 R020b / E014。仅 native_tools 模式 + enableReasoning=true 路径有内容
+  reasoningBuf: string;
   // 本轮捕获的工具调用（多轮模式：本轮 LLM 决定调哪些工具）
   toolCalls: LLMToolCall[];
   // 本轮 LLM 的 messageId（用于 done 事件）
@@ -188,6 +198,7 @@ async function runOneLLMRound(
   const result: OneRoundResult = {
     passthroughEvents: [],
     contentBuf: '',
+    reasoningBuf: '',
     toolCalls: [],
     messageId: newId('m'),
     errorEvent: null,
@@ -219,6 +230,9 @@ async function consumeLLMRoundStream(
   const reactChunks: string[] = [];
   for await (const evt of llmStream) {
     if (evt.type === 'reasoning') {
+      // 累积到 reasoningBuf：段内 sub-turn 的 assistant message 必须携带完整 reasoning_content
+      // 才能满足 DeepSeek-Reasoner 协议（R020b）；同时 push 到 passthroughEvents 让前端 UI 实时显示
+      result.reasoningBuf += evt.delta;
       result.passthroughEvents.push(evt);
       continue;
     }

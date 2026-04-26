@@ -1,11 +1,13 @@
 // llm-client-module
 // 封装 OpenAI 兼容协议客户端。real 模式调真实端点；mock 模式返回 fixture（测试用）。
 //
-// 关键约束（INV-11）：调用方传入的 messages 数组必须已经剥离 reasoningContent
-// 字段。本模块原样转发，不做二次过滤——上下文组装的责任在 conversation-module。
+// 关键约束（INV-11 修正后语义）：
+// - agentTrace：conversation-module 负责过滤，本模块不会收到此字段（R019 永不回传）
+// - reasoningContent：conversation-module 按协议透传，本模块 toOpenAIMessage 写入
+//   snake_case 的 reasoning_content 字段（DeepSeek-Reasoner 多轮要求，不带会 400）
 
 import type { LLMMessage, LLMToolCall, StreamEvent } from '../types.js';
-import { NotConfiguredError, ContextOverflowError } from '../types.js';
+import { NotConfiguredError } from '../types.js';
 import { getSettings, isConfigured } from './settings.js';
 import { chunkText } from './_utils.js';
 import {
@@ -19,6 +21,7 @@ import {
   AGENT_REACT_FORCE_SEARCH,
   REACT_FIRST_ROUND_JSON,
   REACT_FINAL_JSON,
+  recordMockLLMMessages,
 } from './fixtures.js';
 import { readSSELines } from './sse.js';
 import type { OpenAIToolDescriptor } from './tools/index.js';
@@ -37,7 +40,12 @@ export function estimateTokens(text: string): number {
 }
 
 export function estimateMessagesTokens(messages: LLMMessage[]): number {
-  return messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0);
+  // 包含 reasoningContent：reasoner 模型的思考内容会作为 reasoning_content 字段回传到下一轮，
+  // 不计入会让 ContextOverflowError 80% 阈值守卫漏判（reasoning 通常远长于 content）
+  return messages.reduce(
+    (sum, m) => sum + estimateTokens(m.content) + estimateTokens(m.reasoningContent ?? '') + 4,
+    0,
+  );
 }
 
 const MODEL_LIMITS: Record<string, number> = {
@@ -71,6 +79,11 @@ export interface StreamChatParams {
 }
 
 // 流式调用：返回 AsyncIterable<StreamEvent>
+//
+// D021 决策（M5+）：撤销前置 token 守卫——`MODEL_LIMITS` 维护成本高（白名单覆盖不全
+// 且各家 API 真实上限可能差异）；改为信任真实 LLM API 的拒绝行为。
+// `estimateTokens` / `estimateMessagesTokens` / `MODEL_LIMITS` / `ContextOverflowError`
+// 类仍保留供未来 UI 展示 token 用量或重新激活守卫使用。
 export async function* streamChat(params: StreamChatParams): AsyncIterable<StreamEvent> {
   if (!(await isConfigured()) && process.env.USE_MOCK_LLM !== '1') {
     throw new NotConfiguredError();
@@ -78,15 +91,6 @@ export async function* streamChat(params: StreamChatParams): AsyncIterable<Strea
 
   const settings = await getSettings();
   const model = params.modelOverride || settings.llmModel || 'mock-model';
-  const tokensIn = estimateMessagesTokens(params.messages);
-  const limit = getModelLimit(model);
-  if (tokensIn > limit * 0.8) {
-    throw new ContextOverflowError(
-      tokensIn,
-      limit,
-      '建议先选中相关节点做一次"提炼"，在提炼节点上继续讨论可显著降低上下文。',
-    );
-  }
 
   if (process.env.USE_MOCK_LLM === '1' || !settings.llmApiKey) {
     yield* mockStream(params);
@@ -164,6 +168,9 @@ const pickMockRoute = (
 };
 
 async function* mockStream(params: StreamChatParams): AsyncIterable<StreamEvent> {
+  // 记录入参 messages 给测试读取（INV-11 协议层 / reasoning_content 回传断言）
+  recordMockLLMMessages(params.messages);
+
   const lastUser = [...params.messages].reverse().find((m) => m.role === 'user');
   const userText = lastUser?.content ?? '';
   const toolMessageCount = params.messages.filter((m) => m.role === 'tool').length;
@@ -362,6 +369,9 @@ function flushAggregatedToolCalls(buf: Map<number, ToolCallAggBuf>): LLMToolCall
 // 把仓库内部 LLMMessage（camelCase）转为 OpenAI Chat Completion API 期望的 snake_case 形态
 function toOpenAIMessage(m: LLMMessage): Record<string, unknown> {
   const msg: Record<string, unknown> = { role: m.role, content: m.content };
+  // reasoning_content：DeepSeek-Reasoner 思考模式协议要求 assistant 历史消息携带；
+  // 不要求的模型会忽略此字段，因此始终透传不需按模型分支判断
+  if (m.reasoningContent) msg.reasoning_content = m.reasoningContent;
   if (m.toolCalls && m.toolCalls.length > 0) {
     msg.tool_calls = m.toolCalls.map((tc) => ({
       id: tc.id,

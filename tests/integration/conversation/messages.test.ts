@@ -40,10 +40,34 @@ describe('conversation: 节点内消息发送', () => {
     expect(userMsg.reasoningContent).toBeNull();
   });
 
-  it.skip('reasoning 内容不进入下一轮 LLM 调用的 messages 数组（INV-11 协议层）', async () => {
-    // 这条 INV 需要拦截 LLM 客户端的 outbound 请求来验证。
-    // 当前 mock 模式下 LLM 客户端是内部函数，无法外部注入 spy。
-    // Stage 7 改为依赖注入后可启用
+  it('agentTrace 不进入下一轮 LLM 调用的 messages 数组（R019 协议层）；reasoning_content 按协议要求回传（修正后的 INV-11）', async () => {
+    // 启用 thinking mode 让 mock LLM 输出 reasoning（fixtures 中的 canned response 含 reasoning 字段）
+    await api('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ thinkingModeEnabled: true }),
+    });
+    const node = await createNode();
+    // 第一轮：assistant 消息持久化时含 reasoningContent
+    await sendMessage(node.id, '中国新茶饮品牌出海有哪些主要阻力？');
+    // 第二轮：触发新一次 LLM 调用，让我们能观察入参 messages 的形态
+    await sendMessage(node.id, '反例');
+
+    // 跨进程读 mockStream 最近一次入参（mock-server 进程暴露的测试端点）
+    const data = await api<{ messages: Array<{ role: string; content: string; reasoningContent?: string | null; [k: string]: unknown }> | null }>(
+      '/api/__test__/last-llm-messages',
+    );
+    expect(data.messages).not.toBeNull();
+    // 协议层验证 1：所有 messages 不携带 agentTrace 字段（R019 永不回传）
+    for (const m of data.messages!) {
+      expect(m).not.toHaveProperty('agentTrace');
+    }
+    // 协议层验证 2：assistant 历史消息保留 reasoningContent（修正后的 INV-11，
+    // DeepSeek-Reasoner 协议要求；不带会 400 invalid_request_error）
+    const assistantMsgs = data.messages!.filter((m) => m.role === 'assistant');
+    expect(assistantMsgs.length).toBeGreaterThan(0);
+    const firstAsst = assistantMsgs[0]!;
+    expect(typeof firstAsst.reasoningContent === 'string').toBe(true);
+    expect((firstAsst.reasoningContent ?? '').length).toBeGreaterThan(0);
   });
 
   it.skip('上下文超长时返回 413 + ContextOverflowError', async () => {

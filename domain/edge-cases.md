@@ -78,6 +78,43 @@
 - 全局并发 1 守卫（R018）保证同一时刻只有一个节点流式
 **原因**: 跨节点切换是上下文切换的明确动作，需用户确认避免误中断；同节点连发不要求确认（E012）—— 两条路径的差异由"是否切换上下文"决定
 
+## E014 · DeepSeek-Reasoner agent 工具调用段内必须回传 reasoning_content（D020 / R020b）
+
+**精确触发条件**（三个并列）:
+1. 模型 native_tools 模式（非 react_text；deepseek-reasoner 黑名单命中走 react_text 不受影响——但若用户配置非黑名单的支持思考模式 + 工具调用的模型则触发）
+2. enableReasoning=true（思考模式启用）
+3. 当前 turn 内有 tool_calls（agent loop 调用了工具）
+
+**协议规则**（DeepSeek 官方文档）:
+- **跨段**（两个 user 之间无 tool_calls）：assistant 历史 reasoning_content 可省略；传了 API 忽略
+- **段内**（两个 user 之间有 tool_calls）：assistant 历史 reasoning_content **必须**回传给所有后续段内调用，不传 → 400 invalid_request_error
+
+**处理路径**:
+- 跨段（R020a / conversation 路径）：toLLMMessage 透传 reasoningContent；toOpenAIMessage 写 reasoning_content
+- 段内（R020b / agent loop 路径）：runOneLLMRound 累积 reasoning delta 到 reasoningBuf；runAgentLoop push assistant tool_calls message 时携带 reasoningContent
+- 协议形态：assistant message 同时含 content + reasoning_content + tool_calls 三字段（与 deepseek 文档示例对齐）
+
+**反例**（两次修复前的 bug 行为）:
+- 第 1 版（M5 之前）：toLLMMessage 严格剥离 reasoningContent → 跨段路径无 reasoning_content（DeepSeek 实际跨段忽略所以不直接 400，但段内也无累积 → 段内 400）
+- 第 1 版修复（D020 第一轮）：补 toLLMMessage 透传 → 跨段过；但 agent loop 内部段内 sub-turn 仍无 reasoningBuf 累积 → 段内 400 仍存在
+- 第 2 版修复（D020 补充修订 / R020b）：agent.ts `OneRoundResult` 加 reasoningBuf；`consumeLLMRoundStream` 累积；`runAgentLoop` push assistant message 携带——段内 400 才真正消除
+
+**事故记录**: 2026-04-26 用户两次反馈实际报 400；当日两轮修复（第 1 版仅修跨段；第 2 版修段内才闭环）
+
+## E015 · LLM 流错误事件必须写入 message UI（D021 配套）
+**场景**: LLM 调用失败（context_overflow / 401 apiKey 错 / 网络抖动 / 真实 API 4xx / 5xx）
+**处理**:
+- 后端 SSE 流 yield `{ type: 'error', error: '...' }` 事件
+- 前端 `applyStreamEvent.case 'error'`：
+  - `console.error('[stream]', evt.error)`（开发调试可见）
+  - `store.markMessageError(asstMsgId, evt.error)`（UI 反馈：把错误说明追加到 message.content 末尾，前缀 `[错误]` 视觉区分；message.status 置 `'error'`）
+- MessageBubble 通过现有 MarkdownContent 渲染，错误说明自动显示在节点内
+**反例**（修复前的 bug 行为）:
+- 仅 `console.error` 打印到 DevTools，节点 UI 完全静默；用户看不到任何反馈，以为是网络卡顿
+- 实测 2026-04-26 用户报"electron 前端控制台报错但界面没看到提示"
+**原因**: 用户主权原则——错误必须可见可决策；DevTools console 是开发工具，普通用户不会打开
+**事故记录**: 2026-04-26 与 D021（撤销 token 前置守卫）配套修复
+
 ## E007 · 三种选择状态切换时必须互清
 **场景**: 用户在已有 active node 时点击边，或在选中边时 Shift+点节点
 **处理**: 任一选择动作（setActiveNode / toggleSelectNode / setSelectedEdge）都在 store 内主动清空另两种状态

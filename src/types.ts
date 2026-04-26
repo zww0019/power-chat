@@ -117,10 +117,17 @@ export type AgentFinalReason =
   | 'max_same_tool'          // 同种工具调用 5 次硬约束
   | 'tool_error_fatal';      // 连续工具失败无法恢复
 
-// LLM 客户端协议（INV-11 守卫的"纯净 messages"格式）
+// LLM 客户端协议（INV-11 拆分后的语义）：
+// - agentTrace 永不进入此结构（R019 协议无关守卫）
+// - reasoningContent 按协议要求传递：DeepSeek-Reasoner / Anthropic Extended Thinking 等推理模型
+//   要求多轮调用时携带历史 assistant 的 reasoning_content，否则 400；OpenAI o1 系列服务端管理状态
+//   不需客户端回传——是否实际写入请求体由 llm-client 协议层决定
 export interface LLMMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  // 仅 role='assistant' 且模型上一轮输出过 reasoning_content 时填写——回传给下一轮调用
+  // （DeepSeek-Reasoner 等思考模式协议要求；不带会 400 invalid_request_error）
+  reasoningContent?: string | null;
   // 仅 role='assistant' 且本轮发起了工具调用时填写——回灌到下一轮 LLM 让模型知道自己请求过哪些工具
   toolCalls?: LLMToolCall[];
   // 仅 role='tool' 时填写——把工具结果回灌时的 OpenAI 协议关联字段

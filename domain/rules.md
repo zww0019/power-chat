@@ -122,9 +122,36 @@
 - 最后确认：2026-04-26
 
 ## R019 · INV-11 扩展：agentTrace 不回灌下游 LLM
-- `Message.agentTrace`（thought/action/observation）与 `reasoningContent` 同等待遇，仅供用户查看与产品 UI 渲染
+- `Message.agentTrace`（thought/action/observation）仅供用户查看与产品 UI 渲染，**协议无关**
 - 节点对话上下文组装（assembleContext / toLLMMessage）时**必须剥离** agentTrace
 - 同节点连续 agent 调用、提炼任务、跨节点继承——所有下游 LLM 输入都不包含历史 agentTrace
 - 用户若希望某段轨迹内容被纳入下游对话，必须在主线对话里**显式引用**那段材料
+- **不与 reasoningContent 同等待遇**（2026-04-26 修正）：reasoningContent 按协议要求传递（详见 R020），与 agentTrace 的"协议无关永不回传"语义不同；R019 仅约束 agentTrace
 - 来源：agent-design.md §3.3 / §3.4 / INV-11 扩展
+- 最后确认：2026-04-26（语义拆分修正）
+
+## R020a · reasoningContent 跨段路径按协议要求透传
+- 跨段语境（assembleContext 输出，每个 user 是新段开头）：
+  - **DeepSeek-Reasoner**：跨段历史 reasoning_content **可省略**（传了 API 也忽略，无害）
+  - **Anthropic Extended Thinking**：字段名 thinking
+  - **OpenAI o1 系列**：服务端管理状态不需回传
+- 实施约束（conversation 跨段路径）：
+  - `Message.reasoningContent` 持久化层始终保留（数据完整 + 前端展示需要）
+  - `toLLMMessage`（conversation 模块）按白名单透传到 `LLMMessage.reasoningContent`
+  - `toOpenAIMessage`（llm-client 模块）始终写入 `reasoning_content`（不支持的模型忽略此字段；不按模型族分支判断）
+  - `estimateMessagesTokens` 必须包含 reasoningContent 估算（避免 ContextOverflowError 80% 阈值漏判）
+- **不同于 R019**：R019 是协议无关"agentTrace 永不回传"；R020a 是"协议要求允许传递"——两者动机不同
+- 来源：DeepSeek 思考模式协议 / 用户 2026-04-26 报告
+- 最后确认：2026-04-26
+
+## R020b · reasoningContent 段内 sub-turn 必须回传（agent loop 内部）
+- 段内语境（agent loop 内部多 sub-turn 之间，同一 user 之后到下一个 user 之前）：
+  - **DeepSeek-Reasoner native_tools 模式 + enableReasoning=true + 有 tool_calls**：assistant 历史的 reasoning_content **必须**回传给所有后续段内调用，**不带 → 400 invalid_request_error**
+  - 这是 DeepSeek 思考模式的协议硬约束（详见 deepseek 文档"工具调用"小节）
+- 实施约束（agent.runAgentLoop 段内路径）：
+  - `runOneLLMRound` 必须累积 reasoning delta 到 `OneRoundResult.reasoningBuf`
+  - `runAgentLoop` push assistant tool_calls message 时必须携带 `reasoningContent: round.reasoningBuf`
+  - 与 content + tool_calls + reasoning_content 三字段同时存在的 OpenAI 兼容协议形态对齐
+- **react_text 模式不受约束**：deepseek-reasoner 等推理模型黑名单命中走 react_text 文本协议，不走 native_tools 链路；R020b 仅 native_tools 路径
+- 来源：用户 2026-04-26 实际报错 + DeepSeek 官方文档
 - 最后确认：2026-04-26

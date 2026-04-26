@@ -37,6 +37,7 @@ interface CanvasActions {
   upsertMessage: (msg: Message) => void;
   appendMessageContent: (msgId: string, contentDelta: string, reasoningDelta?: string) => void;
   finalizeMessage: (msgId: string) => void;
+  markMessageError: (msgId: string, errorText: string) => void;
   setActiveNode: (id: string | null) => void;
   toggleSelectNode: (id: string) => void;
   clearSelection: () => void;
@@ -174,6 +175,26 @@ export const useCanvasStore = create<Store>()(
             messages: {
               ...s.messages,
               [msgId]: { ...existing, status: 'complete' },
+            },
+          };
+        }),
+
+      // 错误收尾：把错误说明写入 message.content 末尾（用 \n\n[错误] 前缀视觉区分），
+      // status 置 'error'。与 finalizeMessage 互斥（流出错就走这条，不再 finalize）。
+      // 让用户在节点 UI 内直接看到错误而非只在 DevTools console 看到（D021 配套）
+      markMessageError: (msgId, errorText) =>
+        set((s) => {
+          const existing = s.messages[msgId];
+          if (!existing) return s;
+          const prefix = existing.content ? `${existing.content}\n\n` : '';
+          return {
+            messages: {
+              ...s.messages,
+              [msgId]: {
+                ...existing,
+                content: `${prefix}[错误] ${errorText}`,
+                status: 'error',
+              },
             },
           };
         }),

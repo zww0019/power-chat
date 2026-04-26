@@ -23,7 +23,12 @@ export function applyStreamEvent(evt: StreamEvent, asstMsgId: string): void {
     case 'content': store.appendMessageContent(asstMsgId, evt.delta); break;
     case 'done': store.finalizeMessage(asstMsgId); break;
     case 'title': store.updateNode(evt.nodeId, { title: evt.title }); break;
-    case 'error': console.error('[stream]', evt.error); break;
+    case 'error':
+      // D021 配套：错误同时写入 message + DevTools console。
+      // 仅 console.error 会让 UI 静默无反馈，用户看不到失败原因（如 context_overflow / 400）
+      console.error('[stream]', evt.error);
+      store.markMessageError(asstMsgId, evt.error);
+      break;
   }
 }
 

@@ -254,6 +254,67 @@
 - 总结调用的 messages 含大量 tool 角色消息——若 token 估算超 80% 会被 ContextOverflowError 拦截；这种情况下用户会看到 error，预期罕见但需监测
 - 软约束（system prompt 中"5 步停下汇报"）由 LLM 自觉遵守；硬约束 + 触限恢复由代码强制——两层不互替
 
+## D020 · 拆分 INV-11 语义：agentTrace 永不回传 vs reasoningContent 按协议要求
+**决策日期**: 2026-04-26
+**背景**: 用户报告 DeepSeek-Reasoner 思考模式下连续发消息 `400 invalid_request_error: The reasoning_content in the thinking mode must be passed back to the API`。根因排查：早期 INV-11 注释写"reasoningContent 不入下游"是基于 OpenAI 协议假设（reasoning 是模型内部态），把"agentTrace 永不回传"和"reasoningContent 不回传"两个不同动机**混为一谈**：
+- agentTrace 不回传：协议无关——agent 内部记录不是 LLM 协议字段（防 prompt injection / 上下文污染）
+- reasoningContent 不回传：协议相关——OpenAI 假设服务端管理状态；但 DeepSeek-Reasoner 协议**反过来**要求客户端回传
+
+**决定**:
+- **拆分语义**：R019 仅约束 agentTrace（协议无关 / 永不回传）；新增 R020 约束 reasoningContent（按协议要求决定）
+- **toLLMMessage 改造**：白名单透传 `reasoningContent`；agentTrace 仍由白名单 select 守卫（不被选入）
+- **toOpenAIMessage 改造**：在 reasoningContent 非空时写 `reasoning_content` snake_case 到请求体；**始终写入不按模型族分支**——支持的模型用，不支持的模型忽略此字段，避免脆弱的字符串匹配
+- **estimateMessagesTokens 扩容**：纳入 reasoningContent 估算（避免 ContextOverflowError 漏判）
+- **测试启用**：原 `it.skip` 的"INV-11 协议层"测试启用，新断言 (a) agentTrace 不在 messages 中；(b) assistant 历史含 reasoningContent
+
+**理由**:
+- 原 INV-11 是基于 OpenAI 协议假设的"普适规则"；DeepSeek-Reasoner 把这个假设打破——必须按协议要求决定
+- "始终透传"比"按模型分支"更稳：模型族字符串匹配脆弱（新模型上线就 false negative）；下游不支持的模型忽略未知字段是 OpenAI 协议规范行为
+- 拆分后两条规则各有清晰的协议归属：R019 是产品守卫，R020 是协议适配
+
+**影响**:
+- `LLMMessage` 加可选 `reasoningContent: string \| null` 字段（M2a 起 LLMMessage 已扩 toolCalls / toolCallId，本次再加一个不破坏既有协议）
+- 跨进程测试通信新增 `GET /api/__test__/last-llm-messages` 端点（暴露 mockStream 入参快照）
+- 后续若要支持 OpenAI o1（不需回传）/ Anthropic（字段名 thinking）协议，在 toOpenAIMessage 内按需扩展，不影响 toLLMMessage 透传层
+- INV-11 历史描述退役；conversation.ts / llm-client.ts 模块顶部注释同步修正
+
+**2026-04-26 补充修订**：
+
+第一版 D020 仅修复了**跨段路径**（conversation.toLLMMessage 透传），但用户继续报 400。重新查阅 DeepSeek 官方文档（https://api-docs.deepseek.com/zh-cn/guides/thinking_mode）发现协议是**两层分情况**：
+
+| 路径 | 触发条件 | reasoning_content 要求 |
+|---|---|---|
+| **跨段**（两个 user 之间无 tool_calls） | 普通对话连续两轮 | 可省略（传了 API 忽略，无害） |
+| **段内**（两个 user 之间有 tool_calls） | agent native_tools 模式调工具 | **必须**回传，不传 400 |
+
+- 第一版 D020 仅覆盖"跨段透传"——但当前 agent.runAgentLoop 内部 push 的 assistant tool_calls message 没有 reasoning_content 字段，导致段内第二个 sub-turn 的 LLM 调用 400。这是 R020b 的根本动机
+- 补充修订：拆 R020 为 R020a（跨段透传）+ R020b（段内累积），并在 agent.ts `OneRoundResult` 加 `reasoningBuf` 字段、`consumeLLMRoundStream` 累积 reasoning delta、`runAgentLoop` push 时携带 reasoningContent
+- 段内方案与文档"messages.append({role: 'assistant', content, reasoning_content, tool_calls})"对齐
+- E014 同步精确化：触发条件三个并列（native_tools 模式 + enableReasoning + 有 tool_calls）；react_text 模式（deepseek-reasoner 黑名单命中）不走 native_tools 不受影响
+
+## D021 · 撤销 LLM 调用前置 token 守卫
+**决策日期**: 2026-04-26
+**背景**: `streamChat` 之前在调 LLM 前做"前置 token 估算守卫"——`if (tokensIn > limit * 0.8) throw ContextOverflowError`。问题：
+- `MODEL_LIMITS` 维护成本高（白名单覆盖不全；用户用未在白名单的模型走默认 32_000 → 但真实模型可能上限 64K/128K → 误判 false positive）
+- 估算系数（中文 ×0.7，其他 ×0.4）保守，对 reasoning 模型偏差更大
+- 用户实测 DeepSeek-Reasoner 64K 限制下被误判为 32K 触限阻断（错误信息 "context_overflow: 34319/32000"）
+- 真实 LLM API 自身有准确的 context overflow 判定，会立即返回错误，前置守卫是冗余且不可靠的中间层
+
+**决定**:
+- 删除 `streamChat` 内的 token 估算阻断；信任真实 LLM API 的拒绝行为
+- `estimateTokens` / `estimateMessagesTokens` / `MODEL_LIMITS` / `getModelLimit` / `ContextOverflowError` 类**保留**（未来 settings 可能展示 token 用量；如果有重新激活守卫需求可低成本恢复）
+- mock-server 的 `if (e instanceof ContextOverflowError)` catch 块保留（dead-defensive 路径）
+
+**理由**:
+- 真实 LLM API 是 context limit 的权威源，前置守卫永远只能"逼近"
+- 守卫误判（false positive）的代价高于"让请求发出去被 API 拒"的代价：前者用户被无声阻挡，后者用户能看到具体错误并决策
+- 撤销后用户可以使用任何模型而无需更新 `MODEL_LIMITS`；模型上限自然由 API 反馈
+
+**影响**:
+- 撤销前置守卫后真实超长请求会增加一次无效 LLM 调用（但 DeepSeek 等会立即返回错误且不计费失败请求）
+- 配套修改：`nodeActions.applyStreamEvent` 把 `error` 事件写入 message（store.markMessageError）让用户在节点内看到错误，不只在 DevTools console
+- `tests/integration/conversation/messages.test.ts:49-52` "上下文超长返回 413" 测试已 skip，撤销后该路径永不触发；保持 skip 状态，注释更新
+
 ## D012 · AI 消息渲染选用 react-markdown + remark-gfm，拒绝 streamdown
 **决策日期**: 2026-04-26
 **背景**: AI 输出原本以 `whiteSpace: pre-wrap` 当纯文本渲染，缺少 Markdown 富格式。曾评估 Vercel streamdown，但其强依赖 Tailwind / shadcn token / mermaid 75MB 硬依赖，对当前 React 18 + 内联样式 + Electron 打包体积敏感的项目代价过高

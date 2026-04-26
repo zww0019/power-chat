@@ -5,7 +5,8 @@
 // INV-2: refined 类型节点不展开 inbound edges 取原节点内容（只用自己的 messages）
 // INV-3: 分支边的 inheritedUntilSequence immutable
 // INV-8: Message.sequence 严格单调
-// INV-11: reasoning_content 不入下游
+// INV-11（修正后）: reasoningContent 按协议要求传递（DeepSeek-Reasoner 要求多轮回传）；
+//                   agentTrace 永不进入下游（R019 协议无关守卫）—— 详见 toLLMMessage 注释
 
 import type { Message, Node, Edge, LLMMessage, StreamEvent } from '../types.js';
 import { getPersistence } from './persistence.js';
@@ -26,7 +27,8 @@ async function getMessagesOfNode(nodeId: string): Promise<Message[]> {
 //
 // 对话节点：递归向上 join 父链 messages（按 inheritedUntilSequence 截止）
 // 提炼节点：仅本节点 messages，不展开 inbound（INV-2）
-// 输出：纯净 LLMMessage[]，已剥离 reasoningContent（INV-11）
+// 输出：LLMMessage[]，reasoningContent 按协议透传（INV-11 修正后语义）；
+//       agentTrace 永不写入 LLMMessage（R019 协议无关守卫，由 toLLMMessage 白名单保证）
 export async function assembleContext(nodeId: string): Promise<LLMMessage[]> {
   const node = await canvas.getNode(nodeId);
   if (!node) return [];
@@ -34,7 +36,7 @@ export async function assembleContext(nodeId: string): Promise<LLMMessage[]> {
   // INV-2: refined 节点不展开父链
   if (node.type === 'refined') {
     const own = await getMessagesOfNode(nodeId);
-    return own.map(toLLMMessage); // 已剥离 reasoning（toLLMMessage 实现保证）
+    return own.map(toLLMMessage); // agentTrace 已过滤（白名单保证）；reasoningContent 透传
   }
 
   // dialogue 节点：从父链回溯
@@ -91,19 +93,22 @@ async function assembleContextWithLimit(
   return [...inherited, ...truncated.map(toLLMMessage)];
 }
 
-// 关键守卫（INV-11 + R019）：把 Message 转成 LLMMessage，剥离一切非协议字段。
+// 关键守卫：把 Message 转成 LLMMessage，按协议要求决定每个字段是否回传。
 //
-// 显式只 select role + content 是设计上的"白名单剥离"——比 spread + delete 更安全：
-// 未来给 Message 新增任何业务字段（reasoningContent / agentTrace / sequence / status / wasResumed
-// / createdAt 等）都不会因忘加 delete 而泄漏到下游 LLM 输入。
+// 设计上仍是"白名单 select 字段"——未来给 Message 新增任何业务字段（agentTrace / sequence /
+// status / wasResumed / createdAt / nodeId / id 等）都不会因忘加 delete 而泄漏到下游 LLM 输入。
 //
-// 受守卫的字段：
-// - reasoningContent（INV-11 协议层）：LLM 思考内容不进入下一轮
-// - agentTrace（R019 / INV-11 扩展）：thought/action/observation 序列不回灌下游
-//
-// 如果未来需要让某字段回传，必须在这里显式决策 + 同步更新 INV-11 / R019 守卫测试。
+// 字段语义辨析（M5 后修正 INV-11 的混淆语义）：
+// - agentTrace（R019 / 协议无关守卫）：thought/action/observation 序列是 agent 内部记录，
+//   不是 LLM 协议字段；任何模型下都不应回传——这条永远成立。
+// - reasoningContent（按协议要求传递）：DeepSeek-Reasoner / Anthropic Extended Thinking
+//   要求多轮调用携带历史 assistant 的 reasoning_content（不带会 400 invalid_request_error）；
+//   OpenAI o1 系列服务端管理状态不需客户端回传。是否真正写入请求体由 llm-client 的
+//   toOpenAIMessage 决定——这里只负责把数据透传到协议层。
 function toLLMMessage(m: Message): LLMMessage {
-  return { role: m.role, content: m.content };
+  const out: LLMMessage = { role: m.role, content: m.content };
+  if (m.reasoningContent) out.reasoningContent = m.reasoningContent;
+  return out;
 }
 
 // === 节点内发消息（流式）===
