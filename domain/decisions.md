@@ -335,3 +335,52 @@
 - 后续若需要数学公式 / Mermaid 图 / 代码语言着色，应在 `MarkdownContent.tsx` 内逐项接入（如 `rehype-katex` / `rehype-highlight`），而非引入 streamdown
 - 节点卡片宽度有限的约束传递到 Markdown 样式：表格强制 `overflow-x: auto`、h1-h6 字号降级到 13-15px、宽代码块滑动展示
 - 任何对 AI 消息样式的改动应集中在 `MarkdownContent.tsx` 的 `components` 映射，避免散落
+
+## D022 · 节点 fullscreen 形态用全局 fullscreenNodeId，不扩 node.displayMode 三值枚举
+**决策日期**: 2026-04-26
+**背景**: 用户提出"节点应该可以展开为大屏对话框，而不是扎进节点内部输入"。规划阶段评估两种状态模型：
+- A：把现有 `node.collapsed: boolean` 改为 `node.displayMode: 'collapsed' | 'expanded' | 'fullscreen'`（节点状态自包含）
+- B：保留 `node.collapsed: boolean`，新增**全局 store 字段** `fullscreenNodeId: string | null`
+
+**决定**:
+- 选 B：全局 `fullscreenNodeId` 字段，**不持久化**（`partialize` 排除），不动 node schema
+- 进入大屏时同步把节点 `collapsed=true`（避免画布与 Modal 同时展示同一节点的展开内容）
+- 关闭大屏后节点保持折叠态（用户明确决策 F），由 `closeFullscreen` 只清空 `fullscreenNodeId`、不动 collapsed 实现
+- 同时只能 1 个节点处于 fullscreen，由 `openFullscreen` 直接覆写字段保证
+
+**理由**:
+- "覆盖层 Modal" 在产品语义上天然就是全局唯一（同一时刻最多 1 个），与全局字段一一对应；用 node 自身字段反而要在打开新节点时主动清旧节点的字段，逻辑反而绕
+- node schema 是持久化层契约（含 mock-server / api-contract / fixtures），改 displayMode 会牵动整套迁移；全局字段不进 schema 零迁移成本
+- 不持久化是产品决策：刷新视为用户离开了大屏，恢复到一个被遗忘的全屏态体验差
+- 与既有 `activeNodeId` / `selectedEdgeId` / `streamingByNode` 等"运行时派生 UI 状态"放在一起，归类一致
+
+**影响**:
+- `domain/state-machines.md` 节点折叠态从 2 态扩为 3 态（expanded/collapsed/fullscreen），新增 fullscreen↔collapsed 双向迁移
+- `domain/rules.md#R013` 加 fullscreen 视觉规格（宽 `min(70vw, 900px)`、高 `min(80vh, 800px)`、遮罩 `rgba(0,0,0,0.4)`、字号 14）
+- 节点 header 新增 `⛶` 触发按钮，仅展开态可见（折叠态卡片 200×56 太小，跳过）
+- 流式控制"全局并发 1"（R018）不受影响——fullscreen 仅是 UI 形态，不影响 streaming 调度
+
+## D023 · Minimap 极简实现：不显示 edge / 不抽 toggle / 实时随 store 更新
+**决策日期**: 2026-04-26
+**背景**: 用户提出"画布右下角显示一个全局预览的小视窗"。规划阶段需在以下选项间取舍：
+- 是否显示 edge（连线）？
+- 是否提供"折叠为图标"toggle 让用户隐藏？
+- 节点宽高怎么估算？（折叠态精确 200×60，展开态实际高度由内容决定）
+
+**决定**:
+- **不显示 edge**：minimap 主要作用是"位置感知 + 跳转"，180×120 尺寸下连线会变成像素噪点
+- **默认展开 + 不加 toggle**：第一版减少 UI 状态；用户后续若反馈占用空间再加
+- 节点宽高估算：折叠 200×60（精确）、展开统一估 360×360（minimap 比例不敏感，不做精确测量）
+- 视口框包含到 bbox 计算中（保证视口框始终落在 minimap 内可见）
+- 单击空白跳转 / 视口框内拖拽 → 全部直接 `setViewport` 写 store；App 顶层 `useEffect([canvas])` 自动同步本地 vx/vy/zoom state（依赖 zustand persist 的对象引用变化触发）
+
+**理由**:
+- edge 渲染在小尺寸下视觉收益低、加大计算量、还要处理 bezier 曲线缩放，不值得
+- toggle 是"未来可能用到"的扩展点，第一版无证据需要；遵循"不为不存在的需求加状态"
+- 节点高度精确测量需 ResizeObserver 监听每个 DOM，与 minimap 的"低保真俯瞰"定位不符；统一估值能让多次重渲染中 minimap 表现稳定（避免节点高度抖动导致 bbox 跳变）
+
+**影响**:
+- `domain/rules.md#R013` 增加 minimap 视觉规格条目
+- `domain/glossary.md` 新增"全局预览（Minimap）"术语
+- 节点高度估算偏大（实际可能 100-200px，估 360）→ minimap 比例略偏，但不影响功能；后续若发现偏离过大再换更精确策略
+

@@ -11,6 +11,9 @@ interface CanvasState {
   activeNodeId: string | null;
   selectedNodeIds: string[]; // 多选用于提炼
   selectedEdgeId: string | null; // 选中的边（用于删除/高亮）
+  // 当前全屏（大屏 Modal）展示的节点 ID。同时只能有一个，与覆盖层 Modal 语义一致。
+  // 不持久化：刷新后视为关闭，避免恢复到一个用户已经离开的全屏态。
+  fullscreenNodeId: string | null;
   streamingByNode: Record<string, StreamingState>;
   // M5 / 决策 29：agent 启动率/中断率指标内存计数；DevTools 可见，不持久化、不上报
   agentStats: AgentStats;
@@ -43,6 +46,10 @@ interface CanvasActions {
   clearSelection: () => void;
   setSelectedEdge: (id: string | null) => void;
   setStreaming: (nodeId: string, state: StreamingState) => void;
+  // 打开节点大屏 Modal。同时只能一个；打开新节点时旧节点自动被替换。
+  openFullscreen: (nodeId: string) => void;
+  // 关闭大屏 Modal；调用方可附带把节点折叠（按 R013 的 fullscreen→collapsed 状态机）。
+  closeFullscreen: () => void;
   setViewport: (x: number, y: number, zoom: number) => void;
   bumpAgentStat: (kind: 'started' | 'completed' | 'aborted', reason?: string) => void;
 }
@@ -59,6 +66,7 @@ export const useCanvasStore = create<Store>()(
       activeNodeId: null,
       selectedNodeIds: [],
       selectedEdgeId: null,
+      fullscreenNodeId: null,
       streamingByNode: {},
       agentStats: { started: 0, completed: 0, aborted: 0, byReason: {} },
       hydrated: false,
@@ -233,6 +241,21 @@ export const useCanvasStore = create<Store>()(
         set((s) => ({
           streamingByNode: { ...s.streamingByNode, [nodeId]: state },
         })),
+
+      // 打开大屏 Modal：同时把被打开的节点设为 active，让"焦点对比"等
+      // 既有 UI 状态保持一致；不主动改 collapsed（关闭时再统一折叠）。
+      openFullscreen: (nodeId) =>
+        set(() => ({
+          fullscreenNodeId: nodeId,
+          activeNodeId: nodeId,
+          selectedNodeIds: [],
+          selectedEdgeId: null,
+        })),
+
+      // 关闭大屏 Modal：仅清空 fullscreenNodeId。
+      // 节点折叠（collapsed=true）由进入 fullscreen 时的 openFullscreen 调用方（ExpandedNodeView）
+      // 在调用 openFullscreen 前预先完成，关闭时无需再操作节点状态。
+      closeFullscreen: () => set({ fullscreenNodeId: null }),
 
       setViewport: (x, y, zoom) =>
         set((s) => ({

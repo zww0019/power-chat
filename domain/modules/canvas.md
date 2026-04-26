@@ -5,7 +5,7 @@
 
 ## 核心实体
 - 画布（Canvas）：MVP 单画布单实例，持久化视野（viewport x/y/zoom）
-- 节点（Node）：见 glossary，类型 dialogue / refined，有折叠态
+- 节点（Node）：见 glossary，类型 dialogue / refined，三种状态 expanded/collapsed/fullscreen（fullscreen 由前端全局 store 字段 `fullscreenNodeId` 维护，不持久化、不进 schema；详见 D022）
 - 边（Edge）：见 glossary，类型 branch / refine_input
 
 ## 创建语义

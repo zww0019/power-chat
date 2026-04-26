@@ -5,6 +5,8 @@ import { CanvasNode } from './canvas/Node';
 import { EdgeLine } from './canvas/Edge';
 import { RefinePopover } from './canvas/RefinePopover';
 import { SettingsDialog } from './canvas/SettingsDialog';
+import { NodeFullscreenModal } from './canvas/NodeFullscreenModal';
+import { Minimap } from './canvas/Minimap';
 
 export default function App() {
   const canvas = useCanvasStore((s) => s.canvas);
@@ -445,6 +447,12 @@ export default function App() {
 
       {/* 设置弹窗（齿轮按钮触发，或首次启动未配置时强制弹出）*/}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* 节点大屏对话 Modal（节点 header ⛶ 按钮触发；ESC / 点遮罩关闭）*/}
+      <NodeFullscreenModal />
+
+      {/* 全局预览小视窗（右下角）*/}
+      <Minimap />
     </div>
   );
 }

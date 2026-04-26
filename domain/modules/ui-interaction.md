@@ -20,7 +20,14 @@
 
 ## 弹窗模态
 - SettingsDialog：未配置时强制弹出，背景遮罩点击关闭
+- NodeFullscreenModal（节点大屏对话框）：节点 header 点 `⛶` 触发，三种关闭路径——ESC / 点遮罩 / 点 ×；详见 glossary "大屏对话框" 与 D022
 - 弹窗内的输入控件不应吞掉删除键（已被焦点保护覆盖）
+
+## 全局预览（Minimap）
+- 右下角 fixed 缩略视窗，与画布 transform 解耦（不参与 pan/zoom）
+- 单击空白处 → centerOn 跳转视口；视口框内按下 → 拖拽同步视口
+- 写入路径只走 `setViewport` 写 store，App 顶层 `useEffect([canvas])` 依赖 zustand 对象引用变化反向同步本地 vx/vy/zoom state
+- 不显示 edge / 不提供 toggle / 不持久化显隐（详见 D023）
 
 ## SVG 边层渲染约束
 - SVG 容器 pointerEvents: 'none'（防吞背景双击）
