@@ -384,3 +384,60 @@
 - `domain/glossary.md` 新增"全局预览（Minimap）"术语
 - 节点高度估算偏大（实际可能 100-200px，估 360）→ minimap 比例略偏，但不影响功能；后续若发现偏离过大再换更精确策略
 
+## D024 · 边渲染自适应 4 方向锚点 + 折叠态真实尺寸
+**决策日期**: 2026-04-26
+**背景**: 用户反馈两处边渲染异常：
+- 父节点折叠时，连线起点悬空在卡片下方约 140px 处（不贴卡片底边）
+- 默认分支布局是父节点右侧 +440px（水平相邻），但边强制走"父底→子顶"，曲线绕大 U 型与节点真实方位不匹配，"看着混乱"
+
+根因：旧实现在 `Edge.tsx` 用 `NODE_ESTIMATED_HEIGHT = 200` 写死高度，且锚点固定为父底中→子顶中，不感知 `collapsed` 状态也不区分相对方位。
+
+**决定**:
+- 锚点策略：按父子中心点 `(dx, dy)` 的主轴方向择最近一对边中点
+  - `|dx| ≥ |dy|` → 水平边（dx≥0：父右中→子左中；dx<0：父左中→子右中）
+  - `|dy| > |dx|` → 垂直边（dy≥0：父底中→子顶中；dy<0：父顶中→子底中）
+- 节点尺寸：根据 `collapsed + type` 取真实 box（折叠 200×56 dialogue / 200×60 refined，展开 360×200 估算），常量来自 `Node.tsx` 实测渲染高度
+- 控制点：沿锚点法向（主轴方向）外推 `|delta|/2`，使贝塞尔切线在锚点处与所在边垂直，曲线自然切出后弯入对端
+- 几何函数抽到 `prototype/src/canvas/edge-geometry.ts`（无 React 依赖，纯函数），`Edge.tsx` 仅保留 SVG 渲染与命中区
+
+**理由**:
+- 折叠态卡片高度仅 56/60px，写死 200 必然悬空——节点尺寸是边几何的输入，必须真实
+- 默认分支布局水平相邻（D 系列分支决策遗产），强制垂直锚点违反节点真实拓扑；4 方向锚点让边自适应任意布局
+- 控制点取 `|delta|/2` 是经验值：让贝塞尔在两端都呈现切线一致的"S 弯"形态，既不过度弯曲也不近似直线
+- 抽出 edge-geometry 让几何独立可测（13 个单测覆盖 4 方向 + 折叠/展开 + 边界）
+
+**影响**:
+- `domain/rules.md#R013` 第 83 行更新（"垂直中点"描述失效）
+- 新增 `prototype/src/canvas/edge-geometry.ts` + `tests/unit/canvas/edge-geometry.test.ts`
+- 折叠态宽度从 360 缩到 200 同步反映在 x 锚点（旧实现也偏右 80px）
+- 展开态高度仍用 200 估算（消息多时实际可能更高）→ 当前可接受，后续若边明显偏离展开卡片底边再升级 ResizeObserver 测量
+
+## D025 · 帮助弹窗实现选择（位置 / 内容 / ESC 不分级 / 不抽 hook）
+**决策日期**: 2026-04-26
+**背景**: 用户提出"在界面上加一个帮助快捷按钮，点击查看快捷键和功能说明"。规划阶段需在以下选项间取舍：
+- 按钮挂载点：左下角独立 fixed / 顶部 toolbar ⚙ 旁
+- 弹窗实现：复用现有 Modal 模板 / 抽通用 Modal 组件 / 引 markdown 渲染
+- ESC 行为：与 fullscreen 分级关闭 / 一起关闭
+- 是否抽 useEscapeKey hook 给三处 Modal 共用
+
+**决定**:
+- 按钮放在顶部 toolbar 中、⚙ 设置按钮**左侧**，规格与 ⚙ 完全一致（共用 `toolbarBtnStyle` 常量）；图标用 `?` 字符（与 ⛶/⚙/`−` 一致的纯字符 icon 风格）
+- 弹窗 inline 在新文件 `HelpDialog.tsx`，参考 SettingsDialog 的 480px pattern；4 个区块（关于 / 核心操作 / 键盘快捷键 / 节点三态）内容直接 JSX 写死，不引 markdown 解析器
+- ESC **不分级**：HelpDialog 的 keydown 监听器不调 stopPropagation，与 fullscreen 同时打开时一起关闭（用户合理预期"一键全清"）
+- **不抽** `useEscapeKey` hook：当前 3 处 Modal（settings/fullscreen/help）的 ESC 监听各自 inline 三行 useEffect，抽 hook 收益小于"减少一层间接抽象"的价值
+- 状态管理：`helpOpen` 用本地 `useState` 在 App.tsx 维护，不入 store（与 settingsOpen 同模式，无跨组件共享需求）
+- zIndex 取 300，介于 NodeFullscreenModal(200) 与 SettingsDialog(1000) 之间
+
+**理由**:
+- ⚙ 旁的位置让"工具栏动作"语义自然分组，比左下角独立按钮的认知成本低
+- 内容硬编码避免引 markdown 解析器（增加 bundle、引入解析时机/转义/链接等额外维度），帮助文案稳定不需要动态加载
+- ESC 不分级是"YAGNI"——分级关闭需要全局 Modal 栈管理，目前没有证据表明用户会抗拒"一起关"
+- 不抽 hook 遵循"3 次以下不重复就不抽"的经验法则（CLAUDE.md "Three similar lines is better than a premature abstraction"）
+- 引入 `toolbarBtnStyle` 模块级常量是对"两个完全相同的内联样式"的去重（jscpd 在第一版命中 21 行重复），属于真实重复，不是过度抽象
+
+**影响**:
+- `domain/rules.md#R013` 增加 HelpDialog 视觉规格、Modal zIndex 层级表、toolbar 按钮统一规格
+- `domain/modules/ui-interaction.md` 弹窗模态章节追加 HelpDialog 条目
+- 后续若新增 Modal，需查 R013 zIndex 层级表选合适层级；若新增 toolbar 按钮，复用 `toolbarBtnStyle` 常量
+- 帮助内容若需扩展（如新增快捷键），直接改 `HelpDialog.tsx` 的 JSX；同步更新 R013 来源行
+

@@ -1,12 +1,25 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
 import { useCanvasStore } from './store/canvasStore';
 import { api } from './api/client';
 import { CanvasNode } from './canvas/Node';
 import { EdgeLine } from './canvas/Edge';
 import { RefinePopover } from './canvas/RefinePopover';
 import { SettingsDialog } from './canvas/SettingsDialog';
+import { HelpDialog } from './canvas/HelpDialog';
 import { NodeFullscreenModal } from './canvas/NodeFullscreenModal';
 import { Minimap } from './canvas/Minimap';
+
+const toolbarBtnStyle: CSSProperties = {
+  pointerEvents: 'auto',
+  background: '#ffffff',
+  border: '1px solid #e2e8f0',
+  padding: '6px 10px',
+  borderRadius: 6,
+  cursor: 'pointer',
+  fontSize: 13,
+  color: '#475569',
+  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+};
 
 export default function App() {
   const canvas = useCanvasStore((s) => s.canvas);
@@ -31,6 +44,7 @@ export default function App() {
 
   const [refinePos, setRefinePos] = useState<{ x: number; y: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   // 首次进入：从 mock server 拉初始 canvas（单画布）
   useEffect(() => {
@@ -313,21 +327,10 @@ export default function App() {
         <div style={{ pointerEvents: 'auto', background: '#ffffff', padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 11, color: '#94a3b8' }}>
           {allNodes.length} 节点 · 缩放 {Math.round(zoom * 100)}%
         </div>
-        <button
-          onClick={() => setSettingsOpen(true)}
-          title="模型设置"
-          style={{
-            pointerEvents: 'auto',
-            background: '#ffffff',
-            border: '1px solid #e2e8f0',
-            padding: '6px 10px',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontSize: 13,
-            color: '#475569',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-          }}
-        >
+        <button onClick={() => setHelpOpen(true)} title="帮助" style={toolbarBtnStyle}>
+          ?
+        </button>
+        <button onClick={() => setSettingsOpen(true)} title="模型设置" style={toolbarBtnStyle}>
           ⚙
         </button>
       </div>
@@ -447,6 +450,7 @@ export default function App() {
 
       {/* 设置弹窗（齿轮按钮触发，或首次启动未配置时强制弹出）*/}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
 
       {/* 节点大屏对话 Modal（节点 header ⛶ 按钮触发；ESC / 点遮罩关闭）*/}
       <NodeFullscreenModal />

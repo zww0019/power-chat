@@ -21,6 +21,7 @@
 ## 弹窗模态
 - SettingsDialog：未配置时强制弹出，背景遮罩点击关闭
 - NodeFullscreenModal（节点大屏对话框）：节点 header 点 `⛶` 触发，三种关闭路径——ESC / 点遮罩 / 点 ×；详见 glossary "大屏对话框" 与 D022
+- HelpDialog（帮助弹窗）：顶部 toolbar 中 `?` 按钮触发，展示快捷键 + 核心操作 + 节点三态说明；ESC / 点遮罩 / 点 × 三路关闭；ESC 不分级（与 fullscreen 同时打开会一起关），详见 D025
 - 弹窗内的输入控件不应吞掉删除键（已被焦点保护覆盖）
 
 ## 全局预览（Minimap）
