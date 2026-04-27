@@ -1,0 +1,135 @@
+/* Design tokens · 暖质感（Bear / Things 3 调子）
+ *
+ * 命名约定：
+ * - --canvas-* / --surface-*：层级表面色
+ * - --ink-50..900：暖中性灰阶（hsl 偏黄 8%）
+ * - --accent-*：主强调色（焦糖茶）
+ * - --moss-*：副强调（墨绿，分支/成功）
+ * - --shadow-*：暖色调阴影（alpha 用棕基调）
+ * - --space-1..8 / --radius-* / --text-* / --dur-* / --ease-*
+ */
+
+:root {
+  /* ============== 表面层 ============== */
+  --canvas-bg:        #F1EFE8;   /* 画布外底（暖米） */
+  --surface-paper:    #FBF9F2;   /* 节点主体（奶油白） */
+  --surface-raised:   #FFFFFF;   /* 弹窗 / Modal */
+  --surface-warm:     #F5E9D2;   /* 提炼节点 */
+  --surface-warm-hi:  #EFDDB8;   /* 提炼 header / 强调饰条 */
+  --surface-soft:     #F5F2E8;   /* 助手气泡背景 */
+  --surface-tint:     #FAF1E4;   /* 用户气泡背景（accent-50） */
+
+  /* ============== 暖中性灰阶 ============== */
+  --ink-50:  #FAF9F4;
+  --ink-100: #F1EFE8;
+  --ink-200: #E5E2D5;
+  --ink-300: #CFCBBC;
+  --ink-400: #A8A395;
+  --ink-500: #7C7867;
+  --ink-600: #5C5849;
+  --ink-700: #3E3B30;
+  --ink-800: #2A2820;
+  --ink-900: #1A1813;
+
+  /* ============== 主强调：焦糖茶 ============== */
+  --accent-50:  #FAF1E4;
+  --accent-100: #F2DFBE;
+  --accent-200: #E6C695;
+  --accent-300: #DBA876;
+  --accent-400: #C99055;
+  --accent-500: #B8783A;   /* 主色 */
+  --accent-600: #9A6128;
+  --accent-700: #7A4C1E;
+
+  /* ============== 副强调：墨绿（成功 / 分支辅助标记）============== */
+  --moss-300: #8FA286;
+  --moss-500: #5C7556;
+  --moss-600: #455B40;
+
+  /* ============== 语义色 ============== */
+  --semantic-success: #5C7556;
+  --semantic-warning: #C9882F;
+  --semantic-danger:  #B85040;
+  --semantic-info:    var(--accent-500);
+
+  /* ============== 字号 / 行高 ============== */
+  --text-xs:   12px;
+  --text-sm:   13px;
+  --text-base: 15px;
+  --text-md:   16px;
+  --text-lg:   18px;
+  --text-xl:   22px;
+
+  --leading-tight: 1.4;
+  --leading-snug:  1.55;
+  --leading-base:  1.7;
+  --leading-loose: 1.8;
+
+  /* ============== 间距（8 档）============== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+
+  /* ============== 圆角 ============== */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-pill: 9999px;
+
+  /* ============== 阴影（暖阴影：alpha 棕基调 60,48,28）============== */
+  --shadow-sm:  0 1px 2px rgba(60, 48, 28, 0.05);
+  --shadow-md:  0 2px 8px rgba(60, 48, 28, 0.08), 0 1px 3px rgba(60, 48, 28, 0.04);
+  --shadow-lg:  0 6px 20px rgba(60, 48, 28, 0.10), 0 2px 6px rgba(60, 48, 28, 0.04);
+  --shadow-xl:  0 16px 40px rgba(60, 48, 28, 0.14), 0 4px 12px rgba(60, 48, 28, 0.06);
+  --shadow-inset: inset 0 0 0 0.5px rgba(60, 48, 28, 0.08);
+  --shadow-accent: 0 4px 14px rgba(184, 120, 58, 0.22);
+
+  /* ============== 字体 ============== */
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC",
+               "Inter", "Noto Sans SC", "Helvetica Neue", "Hiragino Sans GB",
+               sans-serif;
+  --font-serif: "Iowan Old Style", "Apple Garamond", "Songti SC",
+                "Source Han Serif SC", Georgia, serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", "JetBrains Mono",
+               Menlo, Monaco, Consolas, monospace;
+
+  /* ============== 动效 ============== */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-soft: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-in-out:   cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast:  140ms;
+  --dur-base:  200ms;
+  --dur-slow:  280ms;
+}
+
+/* ============== 全局 keyframes ============== */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}

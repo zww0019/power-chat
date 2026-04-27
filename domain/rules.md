@@ -79,23 +79,62 @@
 - 最后确认：2026-04-27
 
 ## R013 · 视觉硬约束
-- 节点边框 0.5px；圆角 8px；折叠态宽 200px / 高 56-60px（折叠卡内行间 gap 4px）；展开态宽 360px
-- 节点 fullscreen 形态（大屏 Modal）：宽 `min(70vw, 900px)`，高 `min(80vh, 800px)`，居中覆盖；遮罩 `rgba(0,0,0,0.4)`；header 高 48px、标题字号 16px；body padding `16px 24px`；正文字号 14px（与 inline 对齐）
-- 节点展开态 Header：高 36px、标题字号 14px
-- 节点对话气泡：正文 14px / 行高 1.65 / `padding:'8px 12px'`（user 气泡 + assistant 气泡 inline / fullscreen 一致）
-- 节点输入框：inline `padding:'10px 14px'` / fullscreen `padding:'12px 24px'` / 字号 14px
-- 字号阶梯仅 22 / 16 / 14 / 13 / 11 / 10 六档（fullscreen 标题 16；节点 Header / 气泡 / 输入框统一 14）；weight 仅 400 / 500（禁用 600+）
-- 配色 token：对话节点 `#FFFFFF + #E5E3DA`；提炼节点 `#FAEEDA + #EF9F27 + #412402 + #BA7517`；活跃边框 `#185FA5`；连线 `#C8C6BD`；页面背景 `#F1EFE8`
-- 边的几何为 cubic bezier，自适应 4 方向锚点（top/right/bottom/left）：按父子节点中心点 dx/dy 主轴方向择最近一对边中点为起终点，控制点沿锚点法向外推 |delta|/2；锚点坐标按节点 collapsed/expanded 真实尺寸（折叠 200×56 dialogue / 200×60 refined，展开 360×200）计算，不用估算高度
-- 网格 22px 圆点，透明度 4–5%
-- 全局预览（minimap）：右下角 `position:fixed`，180×120，背景 `rgba(255,255,255,0.92)`，节点矩形按 bbox 等比缩放（折叠估 200×60、展开估 360×360），视口框边框 `#185FA5`、填充 `rgba(24,95,165,0.08)`
-- 帮助弹窗（HelpDialog）：480px × 自适应（max-height 80vh, 内容溢出滚动）；遮罩 `rgba(15,23,42,0.45)`；圆角 8px、边框 `0.5px solid #E5E3DA`；ESC / 点遮罩 / × 三路关闭
-- Modal / 浮层 zIndex 层级表（高在前层）：SettingsDialog 1000 → HelpDialog 300 → NodeFullscreenModal 200 → toolbar 100 → minimap 90；新增 Modal 应落入此区间，避免与 settings 同层引发拦截
-- toolbar 按钮统一规格：背景 `#FFFFFF` / 边框 `1px solid #e2e8f0` / `padding:'6px 10px'` / `borderRadius:6` / 字号 13 / 颜色 `#475569` / `boxShadow:'0 1px 4px rgba(0,0,0,0.04)'`；toolbar 容器 `pointerEvents:none`、按钮各自 `pointerEvents:auto`
-- 消息操作工具栏统一规格：纯 icon 按钮组、透明背景、无边框/阴影；按钮字号 13 / `padding:'2px 4px'`；颜色默认 `#94a3b8` / hover 或 highlighted `#6366f1` / disabled `#cbd5e1`；容器 `display:flex / gap:6 / position:absolute`，user 消息 `right:0,bottom:-8`、assistant 消息 `left:0,bottom:-8`；hover 80ms 触发显示；按钮项 user=`✎`，assistant=`📋 ↳`，已派生分支时追加 `⑂N`（点击展开浮层；浮层 open 时工具栏强制保持可见 + 按钮 highlighted）；由 NodeChatPanel 内 `MessageToolbar` + `ToolbarIconButton` 组件提供
-- 编辑模式按钮（UserBubbleEditor 取消/提交）保留胶囊形：字号 11 / `padding:'3px 10px'` / `borderRadius:12`，由 `pillBase` 常量提供——这两处需要"主/次按钮"对比，与气泡尾部工具栏语义不同
-- 来源：视觉规范文档 §一/二/三 + 2026-04-26 fullscreen/minimap 增量 + 2026-04-26 自适应锚点修复（D024）+ 2026-04-26 帮助弹窗（D025）+ 2026-04-27 字号松绑（D026）+ 2026-04-27 工具栏改造（D027）
-- 最后确认:2026-04-27
+
+**单一事实源**：`prototype/src/styles/tokens.css`（CSS 变量）+ `prototype/src/styles/theme.ts`（TS 镜像）。组件内禁止硬编码色值/字号/圆角/阴影/动效，一律走 token。token 命名见 D028。
+**共享 primitives**：弹窗外壳 / 图标按钮 / 关闭按钮 / 主次按钮由 `prototype/src/canvas/_dialogPrimitives.tsx` 提供（ModalShell / IconButton / CloseButton / DialogButton）。新增弹窗复用 ModalShell；新增 icon 按钮复用 IconButton；新增主/次按钮复用 DialogButton。
+
+### 节点几何（不可变量）
+- 折叠态宽 200px / 展开态宽 360px（任何场景不得突破）
+- 展开态 header 高 44px / 大屏 Modal header 高 60px
+- 边框：默认 ink-200 0.5px / refined accent-300 1px / active accent-500 1.5px / selected moss-500 1.5px；阴影默认 shadow.md / active shadow.lg
+- 提炼节点顶部 3px 焦糖渐变饰条（accent-400 → accent-500）
+
+### 大屏 Modal（节点 fullscreen）
+- 容器 `min(72vw, 920px) × min(82vh, 820px)`；遮罩 `rgba(42,40,32,0.45)` + backdrop-blur 6px；圆角 radius.xl
+- header 高 60px、标题字号 text.lg（18）；body padding `${space.s5}px ${space.s7}px`
+- 关闭路径：ESC / 点遮罩 / 关闭按钮 三路
+
+### 画布与连线（PRD §3.2 克制视觉）
+- 画布主底 color.paper、外底 color.canvas；圆点网格 1px、间距 24px、`rgba(60,48,28,0.06)`
+- 连线默认 1.25px ink-300 / 选中 1.75px accent-500，过渡 200ms easeOutSoft；**无箭头、无文本标签**
+- 边几何：cubic bezier 自适应 4 方向锚点（按父子节点中心点 dx/dy 主轴方向择最近一对边中点为起终点，控制点沿锚点法向外推 |delta|/2；锚点坐标按节点 collapsed/expanded 真实尺寸计算）
+- 删除按钮：圆形 + accent-500 描边 + halo；× 用两条 SVG line 绘制（lucide stroke 风格）
+
+### Minimap
+- 右下角 fixed，200×132，背景 `rgba(251,249,242,0.82)` + backdrop-blur 20px、圆角 radius.lg、阴影 shadow.md
+- 节点矩形按 bbox 等比缩放（折叠估 200×60、展开估 360×360）；视口框 accent-500 描边 1.25px + 填充 alpha 0.08
+
+### 顶部工具栏（三段式 floating bar）
+- 左 Logo 胶囊 / 中提炼按钮（多选时出现，焦糖渐变 + shadow.accent）/ 右状态条 + 帮助 + 设置
+- 各段半透明 paper（rgba 0.72）+ backdrop-blur 20px + radius.pill；段内按钮 34×34 圆角 radius.md，hover ink-100 底 + accent-600 色
+
+### 消息悬浮工具栏（D027 形态保留 + D028 视觉重做）
+- user 工具栏右下 / assistant 工具栏左下；位置 `bottom: -10px`
+- 容器：raised 底 + 0.5px ink-200 边 + shadow.sm + radius.pill；按钮 hover/highlighted 切 accent-50 底 + accent-600 色
+- 按钮项：user=`<Pencil>`；assistant=`<Copy> + <GitBranch> + [<GitBranch> + N]`（已派生分支时追加，点击展开浮层；浮层 open 时工具栏强制保持可见 + 按钮 highlighted）
+- 触发：hover 80ms 防抖；由 NodeChatPanel 内 `MessageToolbar` + `ToolbarIconButton` 组件提供
+
+### 编辑模式按钮（UserBubbleEditor）
+- 取消/提交保留胶囊形：fontSize text.xs / padding 5×14 / radius.pill / fontWeight 500，由 `pillBase` 常量提供
+- 提交按钮焦糖渐变 + shadow.accent；取消按钮 raised 底 + ink-200 边
+
+### Modal / 浮层 zIndex 层级表（高在前层）
+SettingsDialog 1000 / RefinePopover 1000 / ToastContainer 1000 / HelpDialog 300 / NodeFullscreenModal 200 / toolbar 100 / minimap 90；新增 Modal 应落入此区间。
+
+### 字号阶梯（token.text.*，禁用 token 外档位）
+xs 12 / sm 13 / base 15 / md 16 / lg 18 / xl 22；fontWeight 启用 400/500/600/700 四档（D028 撤销了 D026 的"禁用 600+"约束以增加层次）。
+
+### 图标系统
+- 全部使用 `lucide-react`；Unicode/Emoji 仅允许在 SVG 内绘制特殊场景使用（如 Edge 删除按钮的两条交叉 line 模拟 X，而不是嵌套外层 SVG 的 lucide 组件）
+- size 13–18 / strokeWidth 1.6–2.0
+
+### 动效
+- ease：easeOutExpo / easeOutSoft / easeInOut；时长 durFast 140ms / durBase 200ms / durSlow 280ms
+- keyframes：spin / blink / toast-in / modal-in / overlay-in（定义在 tokens.css 末尾）
+- 标准复合：弹窗 overlay-in + modal-in 双层；Toast toast-in 入场；节点 hover/active 200ms 过渡；连线选中色变 200ms；流式光标 blink 1.06s step-end
+
+- 来源：视觉规范文档 §一/二/三 + 2026-04-26 fullscreen/minimap 增量 + 2026-04-26 自适应锚点修复（D024）+ 2026-04-26 帮助弹窗（D025）+ 2026-04-27 字号松绑（D026）+ 2026-04-27 工具栏改造（D027）+ 2026-04-27 暖质感视觉系统重做（D028）
+- 最后确认: 2026-04-27
 
 ## R014 · Agent 启动权属用户（原则 C）
 - agent 的合法触发是用户用动作动词（"搜""查""找""读""帮我搜"等）明确表达的工具使用意图

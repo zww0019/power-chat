@@ -1,3 +1,5 @@
+@import './tokens.css';
+
 html, body, #root {
   margin: 0;
   padding: 0;
@@ -6,21 +8,63 @@ html, body, #root {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 14px;
-  color: #1e293b;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  color: var(--ink-900);
+  background: var(--canvas-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1, "ss01" 1;
 }
 
 * {
   box-sizing: border-box;
 }
 
-button:hover {
-  filter: brightness(0.95);
+button {
+  font-family: inherit;
+  transition: background var(--dur-fast) var(--ease-in-out),
+              color var(--dur-fast) var(--ease-in-out),
+              border-color var(--dur-fast) var(--ease-in-out),
+              box-shadow var(--dur-fast) var(--ease-in-out),
+              transform var(--dur-fast) var(--ease-in-out);
 }
 
-button:active {
+button:active:not(:disabled) {
   transform: translateY(1px);
+}
+
+input, textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+textarea {
+  line-height: var(--leading-base);
+}
+
+::selection {
+  background: var(--accent-100);
+  color: var(--ink-900);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--ink-200);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-300);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }

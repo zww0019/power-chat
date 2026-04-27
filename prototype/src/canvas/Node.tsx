@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { MessageSquare, Sparkle, Maximize2, Minimize2, RotateCw, RefreshCw, CornerDownRight } from 'lucide-react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchSourceOfNode } from '../store/canvasStore';
 import { api } from '../api/client';
 import type { Node as NodeType, Message } from '../types';
 import { NodeChatPanel } from './NodeChatPanel';
 import { performRetryRefine, focusNodeOnMessage } from './nodeActions';
 import { useTitleRegeneration } from './useTitleRegeneration';
+import { color, text, space, radius, shadow, font, motion } from '../styles/theme';
 
 // 摘要长度：折叠卡/header 横幅都用同一个值。25 字在 200/360px 宽度下能容纳一行不溢出
 const SOURCE_SUMMARY_MAX = 25;
@@ -32,48 +34,37 @@ interface NodeProps {
   isActive: boolean;
   isSelected: boolean;
   isStreaming: boolean;
-  dimmed: boolean; // 焦点对比：当画布存在 active node 时，其他节点 opacity 0.9
+  dimmed: boolean; // 焦点对比：当画布存在 active node 时，其他节点 opacity 0.92
   onPointerDownHeader: (e: React.PointerEvent, nodeId: string) => void;
 }
 
-/**
- * 计算节点外框的 CSSProperties。配色与几何严格遵守 R013 视觉硬约束。
- * 优先级：active > selected > refined > 默认。
- * - 边框 0.5px（默认/refined）/ 2px（active/selected）；过渡 150ms
- * - 配色 token 取自视觉规范文档 §二
- * - 折叠态宽 200 / 展开态宽 360（由调用方覆写 width）
- */
+// 展开态固定宽 360，折叠态由 CollapsedCard 覆写为 200——R013 几何硬约束。
 function buildNodeStyle(node: NodeType, isActive: boolean, isSelected: boolean, dimmed: boolean): React.CSSProperties {
   const isRefined = node.type === 'refined';
   let border: string;
-  if (isActive) border = '2px solid #185FA5';        // 深蓝活跃
-  else if (isSelected) border = '2px solid #a78bfa'; // 紫色多选（与边删除选中态共用紫色）
-  else if (isRefined) border = '1px solid #EF9F27';  // 提炼节点琥珀
-  else border = '0.5px solid #E5E3DA';               // 对话节点浅灰
+  if (isActive) border = `1.5px solid ${color.accent500}`;
+  else if (isSelected) border = `1.5px solid ${color.moss500}`;
+  else if (isRefined) border = `1px solid ${color.accent300}`;
+  else border = `0.5px solid ${color.ink200}`;
 
   return {
     position: 'absolute',
     left: node.positionX,
     top: node.positionY,
     width: 360,
-    background: isRefined ? '#FAEEDA' : '#FFFFFF',
+    background: isRefined ? color.warm : color.paper,
     border,
-    borderRadius: 8,
-    boxShadow: isActive ? '0 4px 16px rgba(24,95,165,0.12)' : '0 1px 3px rgba(0,0,0,0.03)',
-    opacity: dimmed ? 0.9 : 1,
+    borderRadius: radius.lg,
+    boxShadow: isActive ? shadow.lg : shadow.md,
+    opacity: dimmed ? 0.92 : 1,
     transformOrigin: 'top left',
-    transition: 'border-color 150ms ease, border-width 150ms ease, opacity 150ms ease, box-shadow 150ms ease',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif',
-    fontSize: 13,
+    transition: `border-color ${motion.durBase}ms ${motion.easeOutSoft}, box-shadow ${motion.durBase}ms ${motion.easeOutSoft}, opacity ${motion.durBase}ms ${motion.easeOutSoft}, transform ${motion.durFast}ms ${motion.easeOutSoft}`,
+    fontFamily: font.sans,
+    fontSize: text.sm,
     overflow: 'hidden',
   };
 }
 
-// 单个节点的 UI。PRD §5：
-// - 对话节点：白底、细灰色边框、左上角对话气泡图标
-// - 提炼节点：浅米色背景、稍粗边框、棱形图标
-// - 活跃节点：淡蓝边框、103% 放大、其他节点 90% 透明度
-//
 // 主组件只负责"折叠/展开"分支，具体实现下沉到 CollapsedCard / ExpandedNodeView。
 export function CanvasNode({ node, isActive, isSelected, isStreaming, dimmed, onPointerDownHeader }: NodeProps) {
   const messages = useCanvasStore((s) => selectMessagesOfNode(s, node.id));
@@ -147,6 +138,10 @@ function ExpandedNodeView({
 
   return (
     <div style={styleBase}>
+      {/* 提炼节点顶部饰条：3px 焦糖色横条，强化节点身份 */}
+      {isRefined && (
+        <div style={{ height: 3, background: `linear-gradient(90deg, ${color.accent400}, ${color.accent500})` }} />
+      )}
       <NodeHeader
         node={node}
         isRefined={isRefined}
@@ -182,10 +177,10 @@ interface NodeHeaderProps {
 
 function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeader, onRetryRefine, onFold, onOpenFullscreen }: NodeHeaderProps) {
   const [hovered, setHovered] = useState(false);
-  const headerBg = isRefined ? '#F5E2C0' : '#FAFAF7';
-  const headerBorder = isRefined ? '#EAD4A8' : '#EFEDE5';
-  const headerTextColor = isRefined ? '#412402' : '#475569';
-  const iconColor = isRefined ? '#BA7517' : '#94a3b8';
+  const headerBg = isRefined ? color.warm : color.paper;
+  const headerBorder = isRefined ? color.accent200 : color.ink200;
+  const headerTextColor = isRefined ? color.accent700 : color.ink800;
+  const iconColor = isRefined ? color.accent600 : color.ink500;
   const fallbackTitle = isRefined ? '提炼节点' : '新节点';
 
   return (
@@ -195,20 +190,33 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        padding: '8px 12px',
+        padding: `0 ${space.s4}px`,
         borderBottom: `0.5px solid ${headerBorder}`,
         display: 'flex',
-        gap: 8,
+        gap: space.s2,
         alignItems: 'center',
         cursor: 'grab',
         userSelect: 'none',
         background: headerBg,
-        height: 36,
+        height: 44,
         boxSizing: 'border-box',
       }}
     >
-      <span style={{ fontSize: 13, color: iconColor }}>{isRefined ? '◆' : '💬'}</span>
-      <span style={{ flex: 1, fontWeight: 500, color: headerTextColor, fontSize: 14, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+      <span style={{ display: 'inline-flex', color: iconColor }}>
+        {isRefined ? <Sparkle size={16} strokeWidth={1.8} /> : <MessageSquare size={16} strokeWidth={1.6} />}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          fontWeight: 600,
+          color: headerTextColor,
+          fontSize: text.md,
+          letterSpacing: '-0.01em',
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+          overflow: 'hidden',
+        }}
+      >
         {node.title ?? fallbackTitle}
       </span>
       {/* 仅对话节点 + hover 时显示标题刷新按钮（提炼节点的 title 由系统定值，不参与重新生成）*/}
@@ -217,31 +225,28 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
       )}
       <HeaderStatusBadge isStreaming={isStreaming} isActive={isActive} expanded />
       {isRefined && !isStreaming && (
-        <button
+        <IconButton
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onRetryRefine(); }}
-          style={iconBtn}
           title="重新提炼（基于相同来源节点生成一份新的提炼结果）"
         >
-          ⟳
-        </button>
+          <RefreshCw size={15} strokeWidth={1.6} />
+        </IconButton>
       )}
-      <button
+      <IconButton
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onOpenFullscreen(); }}
-        style={iconBtn}
         title="展开为大屏对话框"
       >
-        ⛶
-      </button>
-      <button
+        <Maximize2 size={15} strokeWidth={1.6} />
+      </IconButton>
+      <IconButton
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onFold(); }}
-        style={iconBtn}
         title="折叠"
       >
-        −
-      </button>
+        <Minimize2 size={15} strokeWidth={1.6} />
+      </IconButton>
     </div>
   );
 }
@@ -250,52 +255,108 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
 // 展开态空间充裕，streaming 时显示"思考中"文字（而非折叠态的纯 ●）。
 // 两者不合并，是因为折叠态宽 200px，文字徽章会撑破布局。
 function HeaderStatusBadge({ isStreaming, isActive }: { isStreaming: boolean; isActive: boolean; expanded?: boolean }) {
-  if (isStreaming) return <span style={{ fontSize: 11, color: '#185FA5' }}>● 思考中</span>;
-  if (isActive) return <span style={{ fontSize: 11, color: '#185FA5' }}>● 活跃中</span>;
+  if (isStreaming) {
+    return (
+      <span style={{ ...statusBadgeBase, color: color.accent600, background: color.accent50 }}>
+        <span style={{ ...statusDot, background: color.accent500, animation: 'blink 1.4s ease-in-out infinite' }} />
+        思考中
+      </span>
+    );
+  }
+  if (isActive) {
+    return (
+      <span style={{ ...statusBadgeBase, color: color.moss600, background: 'rgba(92, 117, 86, 0.12)' }}>
+        <span style={{ ...statusDot, background: color.moss500 }} />
+        活跃
+      </span>
+    );
+  }
   return null;
 }
 
-const iconBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  cursor: 'pointer',
-  fontSize: 13,
-  color: '#94a3b8',
-  width: 22,
-  height: 22,
-  borderRadius: 4,
-  padding: 0,
+const statusBadgeBase: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  fontSize: text.xs,
+  fontWeight: 500,
+  padding: '3px 8px',
+  borderRadius: radius.pill,
+  letterSpacing: '0.01em',
 };
 
-/**
- * 标题刷新按钮：用户点击主动触发标题重新生成（替代旧的"按对话轮数自动触发"）。
- *
- * 视觉与交互：
- * - 父容器 hover 时才挂载（由调用方控制）；置于标题文本右侧、状态徽章左侧
- * - loading 期间按钮 disabled + 旋转动画，避免重复点击
- * - 失败时由 performRegenerateTitle 内部 toast 提示，按钮自身只负责状态切换
- */
-function RegenerateTitleButton({ nodeId }: { nodeId: string }) {
-  const { loading, trigger } = useTitleRegeneration(nodeId);
+const statusDot: React.CSSProperties = {
+  display: 'inline-block',
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+};
+
+// header 内的图标按钮：28×28 圆角，hover 显示暖色底色，提供更明确的可点反馈。
+function IconButton({
+  children,
+  onClick,
+  onPointerDown,
+  title,
+  disabled,
+  hoverBg = color.ink100,
+  size = 28,
+}: {
+  children: React.ReactNode;
+  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onPointerDown?: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  title?: string;
+  disabled?: boolean;
+  hoverBg?: string;
+  size?: number;
+}) {
+  const [hover, setHover] = useState(false);
   return (
     <button
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={trigger}
-      disabled={loading}
-      style={{ ...iconBtn, cursor: loading ? 'wait' : 'pointer', opacity: loading ? 0.5 : 1 }}
-      title={loading ? '生成中…' : '重新生成标题'}
+      onPointerDown={onPointerDown}
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+      disabled={disabled}
+      style={{
+        background: hover && !disabled ? hoverBg : 'transparent',
+        border: 'none',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        color: disabled ? color.ink300 : color.ink600,
+        width: size,
+        height: size,
+        borderRadius: radius.sm,
+        padding: 0,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        opacity: disabled ? 0.6 : 1,
+      }}
     >
-      <span style={{ display: 'inline-block', animation: loading ? 'spin 1s linear infinite' : 'none' }}>↻</span>
+      {children}
     </button>
   );
 }
 
-// 注入旋转动画 keyframes（仅一次）。放在模块级而非组件内，避免每次渲染重复 append。
-if (typeof document !== 'undefined' && !document.getElementById('node-title-spin-keyframes')) {
-  const styleEl = document.createElement('style');
-  styleEl.id = 'node-title-spin-keyframes';
-  styleEl.textContent = '@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
-  document.head.appendChild(styleEl);
+/**
+ * 标题刷新按钮：用户点击主动触发标题重新生成。
+ * loading 期间按钮 disabled + 旋转动画。
+ */
+function RegenerateTitleButton({ nodeId }: { nodeId: string }) {
+  const { loading, trigger } = useTitleRegeneration(nodeId);
+  return (
+    <IconButton
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={trigger}
+      disabled={loading}
+      title={loading ? '生成中…' : '重新生成标题'}
+    >
+      <span style={{ display: 'inline-flex', animation: loading ? 'spin 1s linear infinite' : 'none' }}>
+        <RotateCw size={15} strokeWidth={1.6} />
+      </span>
+    </IconButton>
+  );
 }
 
 interface CollapsedCardProps {
@@ -317,22 +378,33 @@ function CollapsedCard(props: CollapsedCardProps) {
 
 // 双行布局通用样式
 const collapsedShellBase: React.CSSProperties = {
-  padding: '10px 12px',
+  padding: `${space.s3}px ${space.s4}px`,
   cursor: 'pointer',
   display: 'flex',
   flexDirection: 'column',
   justifyContent: 'center',
-  gap: 4,
+  gap: 6,
 };
 
 // 状态徽章：流式 ● / 活跃 ● 活跃中（互斥）
 function StatusBadge({ isStreaming, isActive }: { isStreaming: boolean; isActive: boolean }) {
-  if (isStreaming) return <span style={{ fontSize: 10, color: '#185FA5' }}>●</span>;
-  if (isActive) return <span style={{ fontSize: 11, color: '#185FA5' }}>● 活跃中</span>;
+  if (isStreaming) {
+    return (
+      <span style={{ ...statusDot, width: 7, height: 7, background: color.accent500, animation: 'blink 1.4s ease-in-out infinite' }} />
+    );
+  }
+  if (isActive) {
+    return (
+      <span style={{ ...statusBadgeBase, color: color.moss600, background: 'rgba(92, 117, 86, 0.12)' }}>
+        <span style={{ ...statusDot, background: color.moss500 }} />
+        活跃
+      </span>
+    );
+  }
   return null;
 }
 
-// 折叠态对话节点（按文档 §2.1）：meta "对话 · N 轮" / title / 可选"分支自..."来源行
+// 折叠态对话节点：meta "对话 · N 轮" / title / 可选"分支自..."来源行
 function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, messageCount, onPointerDownHeader }: CollapsedCardProps) {
   const [hovered, setHovered] = useState(false);
   const roundCount = Math.max(0, Math.ceil(messageCount / 2));
@@ -340,7 +412,7 @@ function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, message
   const branchSource = useCanvasStore((s) => selectBranchSourceOfNode(s, node.id));
   const hasSource = !!branchSource;
   // 三行卡（多了来源行）需要更高的高度避免内容裁切
-  const cardHeight = hasSource ? 76 : 56;
+  const cardHeight = hasSource ? 88 : 68;
   return (
     <div
       style={{ ...styleBase, ...collapsedShellBase, width: 200, height: cardHeight }}
@@ -348,13 +420,26 @@ function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, message
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>
-        <span style={{ fontSize: 11, color: '#94a3b8' }}>💬</span>
-        <span style={{ flex: 1, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{`对话 · ${roundCount} 轮`}</span>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: text.xs, color: color.ink500 }}>
+        <MessageSquare size={12} strokeWidth={1.8} />
+        <span style={{ flex: 1, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+          {`对话 · ${roundCount} 轮`}
+        </span>
         <StatusBadge isStreaming={isStreaming} isActive={isActive} />
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: '#1e293b', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+        <span
+          style={{
+            flex: 1,
+            fontSize: text.sm,
+            fontWeight: 600,
+            color: color.ink900,
+            letterSpacing: '-0.01em',
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+            overflow: 'hidden',
+          }}
+        >
           {title}
         </span>
         {hovered && !isStreaming && <RegenerateTitleButton nodeId={node.id} />}
@@ -403,15 +488,19 @@ function BranchSourceLine({ parentNode, sourceMessage, variant }: BranchSourceLi
         onClick={handleClick}
         title={`分支自《${parentTitle}》第 ${sourceMessage.sequence + 1} 条：${summary}`}
         style={{
-          fontSize: 11,
-          color: '#6366f1',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          fontSize: text.xs,
+          color: color.moss600,
           cursor: 'pointer',
           whiteSpace: 'nowrap',
           textOverflow: 'ellipsis',
           overflow: 'hidden',
         }}
       >
-        ↳ 分支自《{parentTitle}》
+        <CornerDownRight size={12} strokeWidth={1.8} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>分支自《{parentTitle}》</span>
       </div>
     );
   }
@@ -422,23 +511,24 @@ function BranchSourceLine({ parentNode, sourceMessage, variant }: BranchSourceLi
       onClick={handleClick}
       title="点击跳转到父节点"
       style={{
-        padding: '6px 12px',
-        background: '#EEF2FF',
-        borderBottom: '0.5px solid #C7D2FE',
-        fontSize: 12,
-        color: '#4F46E5',
+        padding: `${space.s2}px ${space.s4}px`,
+        background: 'rgba(92, 117, 86, 0.08)',
+        borderBottom: `0.5px solid rgba(92, 117, 86, 0.18)`,
+        fontSize: text.xs,
+        color: color.moss600,
         cursor: 'pointer',
         display: 'flex',
         gap: 6,
-        alignItems: 'baseline',
+        alignItems: 'center',
       }}
     >
-      <span style={{ flexShrink: 0 }}>↳ 分支自《{parentTitle}》第 {sourceMessage.sequence + 1} 条</span>
+      <CornerDownRight size={13} strokeWidth={1.8} style={{ flexShrink: 0 }} />
+      <span style={{ flexShrink: 0, fontWeight: 500 }}>分支自《{parentTitle}》第 {sourceMessage.sequence + 1} 条</span>
       <span
         style={{
           flex: 1,
-          color: '#6366f1',
-          opacity: 0.8,
+          color: color.moss500,
+          opacity: 0.85,
           whiteSpace: 'nowrap',
           textOverflow: 'ellipsis',
           overflow: 'hidden',
@@ -451,22 +541,42 @@ function BranchSourceLine({ parentNode, sourceMessage, variant }: BranchSourceLi
   );
 }
 
-// 折叠态提炼节点（按文档 §2.3）：meta "提炼·N 节点" / title
+// 折叠态提炼节点：第一行显示节点标题，第二行显示状态描述
 function CollapsedRefinedCard({ node, isStreaming, isActive, styleBase, messageCount, onPointerDownHeader }: CollapsedCardProps) {
-  const meta = node.title ?? '提炼节点';
-  const title = messageCount > 0 ? '已提炼，点击查看' : '等待提炼…';
+  const nodeTitle = node.title ?? '提炼节点';
+  const statusDesc = messageCount > 0 ? '已提炼，点击查看' : '等待提炼…';
   return (
     <div
-      style={{ ...styleBase, ...collapsedShellBase, width: 200, height: 60 }}
+      style={{ ...styleBase, ...collapsedShellBase, width: 200, height: 72 }}
       onPointerDown={(e) => onPointerDownHeader(e, node.id)}
     >
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: '#854F0B', fontWeight: 400 }}>
-        <span style={{ fontSize: 11, color: '#BA7517' }}>◆</span>
-        <span style={{ flex: 1, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{meta}</span>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: text.xs, color: color.accent600 }}>
+        <Sparkle size={12} strokeWidth={1.8} />
+        <span
+          style={{
+            flex: 1,
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+            overflow: 'hidden',
+            fontWeight: 500,
+          }}
+        >
+          {nodeTitle}
+        </span>
         <StatusBadge isStreaming={isStreaming} isActive={isActive} />
       </div>
-      <div style={{ fontSize: 13, fontWeight: 500, color: '#412402', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
-        {title}
+      <div
+        style={{
+          fontSize: text.sm,
+          fontWeight: 600,
+          color: color.accent700,
+          letterSpacing: '-0.01em',
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+          overflow: 'hidden',
+        }}
+      >
+        {statusDesc}
       </div>
     </div>
   );

@@ -73,13 +73,13 @@
 - 内容未变更或为空时静默取消（不发起截断+重发，避免无意义的 LLM 调用）
 - 仅 user 消息可编辑，assistant 消息无任何编辑入口
 
-## Agent 轨迹区块（M4 起）
-- 视觉：浅冷灰 `#F5F4EE` 背景 / 圆角 6 / 内边距 10/12 / 字号 11px（R013 token） / text-secondary
-- 步骤图标：thought ●（4px 圆点）/ action → / failure ✕（颜色 `#A32D2D` 暗红）/ final ●
-- 行间距 6px；长 thought >60 字默认省略 + 点击展开看完整
-- 折叠/展开行为：流式期间默认展开 + 实时新 step 流入；streaming → complete 边沿触发自动折叠（仅一次，不会因用户后续展开重复触发）
-- 折叠态：单行汇总 "▸ AI 搜索 N 次 / 阅读 M 个网页（展开 ↓）"
-- 启动过渡：streaming 已开始但 trace/reasoning/content 全空的瞬间显示 "AI 正在准备工具调用…"（11px text-tertiary）
-- 中断按钮：右上角浅色 ⨯，M4 阶段 disabled（临时豁免 R015，详见 modules/agent.md "M4 临时豁免"），M5 接通中断 API 后启用
+## Agent 轨迹区块（M4 起 / D028 视觉重做）
+- 视觉：暖米半透明背景 `rgba(245,233,210,0.5)` + 0.5px accent-200 边 / 圆角 token.radius.md / 内边距 12×16 / 字号 token.text.xs / 文字 token.color.ink-600（具体色值/字号走 R013 token 单一事实源）
+- 步骤图标：thought ● 焦糖小圆点 / action 用 lucide ToolIcon 按 toolName 派发（web_search→Search、fetch_page→Globe、其他→Hammer，accent-500 色）/ failure 用 lucide X（token.color.danger） / final ● moss 副色
+- 行间距 5px；长 thought >60 字默认省略 + 点击"展开"看完整（按钮 accent-600 + underline）
+- 折叠/展开行为：流式期间默认展开 + 实时新 step 流入；streaming → complete 边沿触发自动折叠（仅一次，不会因用户后续展开重复触发）；折叠态用 lucide ChevronRight，展开按钮用 lucide ChevronDown
+- 折叠态：单行汇总 "AI 搜索 N 次 / 阅读 M 个网页"（左侧 ChevronRight 图标 + 右侧"展开"提示）
+- 启动过渡：streaming 已开始但 trace/reasoning/content 全空的瞬间显示三连 blink 焦糖小点 + "AI 正在准备工具调用…"（token.text.xs / ink-400 italic）
+- 中断按钮：右上角圆形 lucide X，0.5px danger 边描，hover 切 danger 实心反白；M5 已接通中断 API（行为约束见 R015）
 - 与 reasoning 区块的关系：AgentTrace 在 reasoning 之上独立显示——agentTrace 是粗粒度工具调用过程，reasoning 是模型内部 chain-of-thought，语义不合并
 - 防止节点拖拽吞按钮事件：所有 trace 内交互按钮（中断 / 折叠 / 展开 / "展开"链接）必须 onPointerDown stopPropagation，与现有节点 header 按钮治理同源

@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
+import { X, MessageSquare, Sparkle, RotateCw } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 import { NodeChatPanel } from './NodeChatPanel';
 import { useTitleRegeneration } from './useTitleRegeneration';
+import { color, text, space, radius, shadow, font, motion } from '../styles/theme';
+import { IconButton } from './_dialogPrimitives';
 
 // 节点大屏对话 Modal（节点的第三态 fullscreen，决策来自规划阶段）：
 // - 覆盖层 Modal：半透明遮罩 + 居中容器，画布在背后保持原状
@@ -16,8 +19,6 @@ export function NodeFullscreenModal() {
   );
   const closeFullscreen = useCanvasStore((s) => s.closeFullscreen);
 
-  // ESC 关闭。挂在 window 冒泡阶段；因为 Modal 内输入框 keydown 不会 stopPropagation ESC，
-  // 所以冒泡即可覆盖所有关闭路径，无需捕获阶段。
   useEffect(() => {
     if (!fullscreenNodeId) return;
     const onKey = (e: KeyboardEvent) => {
@@ -33,14 +34,13 @@ export function NodeFullscreenModal() {
   if (!fullscreenNodeId || !node) return null;
 
   const isRefined = node.type === 'refined';
-  // 仅对话节点支持标题重新生成（提炼节点的 title 是系统定值，不参与）
   const canRegenerateTitle = !isRefined && !isStreaming;
-  const headerBg = isRefined ? '#F5E2C0' : '#FAFAF7';
-  const headerBorder = isRefined ? '#EAD4A8' : '#EFEDE5';
-  const headerTextColor = isRefined ? '#412402' : '#475569';
-  const iconColor = isRefined ? '#BA7517' : '#94a3b8';
-  const containerBg = isRefined ? '#FAEEDA' : '#FFFFFF';
-  const containerBorder = isRefined ? '1px solid #EF9F27' : '0.5px solid #E5E3DA';
+  const headerBg = isRefined ? color.warm : color.paper;
+  const headerBorder = isRefined ? color.accent200 : color.ink200;
+  const headerTextColor = isRefined ? color.accent700 : color.ink900;
+  const iconColor = isRefined ? color.accent600 : color.ink600;
+  const containerBg = isRefined ? color.warm : color.paper;
+  const containerBorder = isRefined ? `1px solid ${color.accent300}` : `0.5px solid ${color.ink200}`;
   const fallbackTitle = isRefined ? '提炼节点' : '新节点';
 
   return (
@@ -49,28 +49,35 @@ export function NodeFullscreenModal() {
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0, 0, 0, 0.4)',
+        background: 'rgba(42, 40, 32, 0.45)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 200,
+        animation: `overlay-in ${motion.durBase}ms ${motion.easeOutSoft}`,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 'min(70vw, 900px)',
-          height: 'min(80vh, 800px)',
+          width: 'min(72vw, 920px)',
+          height: 'min(82vh, 820px)',
           background: containerBg,
           border: containerBorder,
-          borderRadius: 8,
-          boxShadow: '0 16px 48px rgba(0,0,0,0.18)',
+          borderRadius: radius.xl,
+          boxShadow: shadow.xl,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif',
+          fontFamily: font.sans,
+          animation: `modal-in ${motion.durBase}ms ${motion.easeOutSoft}`,
         }}
       >
+        {isRefined && (
+          <div style={{ height: 3, background: `linear-gradient(90deg, ${color.accent400}, ${color.accent500})`, flexShrink: 0 }} />
+        )}
         <FullscreenHeader
           headerBg={headerBg}
           headerBorder={headerBorder}
@@ -102,8 +109,6 @@ interface FullscreenHeaderProps {
   onClose: () => void;
 }
 
-// 大屏 header：图标 + 标题 + (hover 时) 刷新按钮 + 流式徽章 + 关闭按钮。
-// 拆出独立组件是为了让 hover 状态局部化（hover 状态变更不应触发整个 Modal 重渲染）。
 function FullscreenHeader({
   headerBg,
   headerBorder,
@@ -123,62 +128,75 @@ function FullscreenHeader({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        padding: '12px 20px',
+        padding: `0 ${space.s5}px`,
         borderBottom: `0.5px solid ${headerBorder}`,
         display: 'flex',
-        gap: 10,
+        gap: space.s3,
         alignItems: 'center',
         background: headerBg,
-        height: 48,
+        height: 60,
         boxSizing: 'border-box',
         flex: '0 0 auto',
       }}
     >
-      <span style={{ fontSize: 14, color: iconColor }}>{isRefined ? '◆' : '💬'}</span>
-      <span style={{ flex: 1, fontWeight: 500, color: headerTextColor, fontSize: 16, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+      <span style={{ display: 'inline-flex', color: iconColor }}>
+        {isRefined ? <Sparkle size={20} strokeWidth={1.8} /> : <MessageSquare size={20} strokeWidth={1.6} />}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          fontWeight: 700,
+          color: headerTextColor,
+          fontSize: text.lg,
+          letterSpacing: '-0.015em',
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+          overflow: 'hidden',
+        }}
+      >
         {title}
       </span>
       {canRegenerateTitle && hovered && (
-        <button
+        <IconButton
           onClick={handleRegenerate}
           disabled={loading}
           title={loading ? '生成中…' : '重新生成标题'}
+          size={34}
+        >
+          <span style={{ display: 'inline-flex', animation: loading ? 'spin 1s linear infinite' : 'none' }}>
+            <RotateCw size={16} strokeWidth={1.6} />
+          </span>
+        </IconButton>
+      )}
+      {isStreaming && (
+        <span
           style={{
-            background: 'transparent',
-            border: 'none',
-            cursor: loading ? 'wait' : 'pointer',
-            fontSize: 16,
-            color: '#94a3b8',
-            width: 28,
-            height: 28,
-            borderRadius: 4,
-            padding: 0,
-            opacity: loading ? 0.5 : 1,
-            lineHeight: 1,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: text.xs,
+            fontWeight: 500,
+            color: color.accent600,
+            background: color.accent50,
+            padding: '4px 10px',
+            borderRadius: radius.pill,
           }}
         >
-          <span style={{ display: 'inline-block', animation: loading ? 'spin 1s linear infinite' : 'none' }}>↻</span>
-        </button>
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: color.accent500,
+              animation: 'blink 1.4s ease-in-out infinite',
+            }}
+          />
+          思考中
+        </span>
       )}
-      {isStreaming && <span style={{ fontSize: 12, color: '#185FA5' }}>● 思考中</span>}
-      <button
-        onClick={onClose}
-        title="关闭大屏（ESC）"
-        style={{
-          background: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-          fontSize: 18,
-          color: '#94a3b8',
-          width: 28,
-          height: 28,
-          borderRadius: 4,
-          padding: 0,
-          lineHeight: 1,
-        }}
-      >
-        ×
-      </button>
+      <IconButton onClick={onClose} title="关闭大屏（ESC）" size={34}>
+        <X size={18} strokeWidth={1.8} />
+      </IconButton>
     </div>
   );
 }

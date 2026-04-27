@@ -87,7 +87,7 @@
 - 单元测试 19 个：web-search 10 + fetch-page 9（覆盖请求体格式 / 响应映射 / 各类错误分类 / R018 50_000 截断 / abort 短路）
 
 **M4（前端轨迹区块 UI）已完成**：
-- 新建 AgentTrace 组件按文档 §4.3 视觉规范渲染：背景 `#F5F4EE` / 圆角 6 / 内边距 10/12 / 字号 11px（与 R013 token 集合对齐）
+- 新建 AgentTrace 组件按文档 §4.3 + D028 暖质感重做后规范渲染：背景 `rgba(245,233,210,0.5)`（暖米半透明）/ 0.5px accent-200 边 / 圆角 token.radius.md / 内边距 12×16 / 字号 token.text.xs（12）（具体色值/字号统一走 R013 token 单一事实源）
 - 步骤行：thought（●）/ action+observation 配对合并行（→ ... → 结果）/ failure（✕ + `#A32D2D` 暗红）/ final（●，含触限/中断各类 reason 文案）
 - 长 thought >60 字默认省略 + 点击展开看完整
 - 流式期间默认展开；streaming → complete 边沿触发自动折叠（与 reasoningContent 同模式）
@@ -109,6 +109,12 @@
 - 测试隔离：mock-server `__test__/reset` 端点同步清 abort registry，避免上轮残留 controller 让本轮 409
 - 集成测试：`abort.test.ts`（2 个）+ `concurrency.test.ts`（1 通过 + 1 known-flaky skip）
 - M4 临时豁免 R015 已撤销
+
+## 流式透传硬约束（M5+ 修复后固化）
+- `runOneLLMRoundStream` 必须是 async generator：每个 LLM delta（reasoning / native_tools content）即时 `yield` 给上游，不得攒到数组里等整轮跑完才输出
+- 反例（已修复）：旧实现把 delta 累积到 `OneRoundResult.passthroughEvents`，整轮跑完才在 `runAgentLoop` 一次性 for-of yield，前端表现为"长时间等待→末尾突然全部出现"的伪流式
+- `OneRoundResult` 仅承载 toolCalls/messageId/errorEvent/contentBuf/reasoningBuf 等需要流结束后回灌到 messages 的状态，不再持有事件队列
+- react_text 模式例外：content delta 仍在 `runOneLLMRoundStream` 内部攒批到 `reactChunks`，原因是 LLM 输出完整 JSON 才能区分"调工具 vs 最终回复"，提前 yield 会暴露 `{"thought":...,"action":...}` 骨架给前端
 
 ## M5 已知 flaky 测试
 - 测试用例：`concurrency.test.ts > A 节点流式中，B 节点 send 直接返回 409 streaming_busy`

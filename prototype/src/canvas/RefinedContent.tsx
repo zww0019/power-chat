@@ -1,4 +1,5 @@
 import type { Message } from '../types';
+import { color, text, space } from '../styles/theme';
 
 interface RefinedContentProps {
   message: Message | null;
@@ -61,16 +62,16 @@ export function RefinedContent({ message }: RefinedContentProps) {
   }
 
   return (
-    <div style={{ padding: '10px 14px' }}>
+    <div style={{ padding: `${space.s4}px ${space.s5}px` }}>
       {sections.map((s, idx) => {
         const isLast = idx === sections.length - 1;
         return (
           <div
             key={s.label}
             style={{
-              marginBottom: isLast ? 0 : 10,
-              paddingBottom: isLast ? 0 : 10,
-              borderBottom: isLast ? 'none' : '0.5px solid #F1E2C8',
+              marginBottom: isLast ? 0 : space.s4,
+              paddingBottom: isLast ? 0 : space.s4,
+              borderBottom: isLast ? 'none' : `0.5px solid ${color.accent200}`,
             }}
           >
             <div style={sectionLabel}>{s.label}</div>
@@ -84,23 +85,45 @@ export function RefinedContent({ message }: RefinedContentProps) {
           </div>
         );
       })}
-      {isStreaming && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>● 提炼中…</div>}
+      {isStreaming && (
+        <div
+          style={{
+            fontSize: text.xs,
+            color: color.accent600,
+            marginTop: space.s3,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: color.accent500,
+              animation: 'blink 1.4s ease-in-out infinite',
+            }}
+          />
+          提炼中…
+        </div>
+      )}
     </div>
   );
 }
 
 const emptyStyle: React.CSSProperties = {
-  padding: '12px',
-  fontSize: 12,
+  padding: `${space.s4}px ${space.s5}px`,
+  fontSize: text.sm,
   fontStyle: 'italic',
-  color: '#94a3b8',
+  color: color.ink400,
 };
 
 const fallbackBox: React.CSSProperties = {
-  padding: '10px 14px',
-  fontSize: 13,
-  lineHeight: 1.6,
-  color: '#412402',
+  padding: `${space.s4}px ${space.s5}px`,
+  fontSize: text.base,
+  lineHeight: 1.7,
+  color: color.accent700,
 };
 
 const rawText: React.CSSProperties = {
@@ -109,26 +132,29 @@ const rawText: React.CSSProperties = {
 };
 
 const sectionLabel: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 500,
-  color: '#854F0B',
-  marginBottom: 4,
+  fontSize: text.xs,
+  fontWeight: 600,
+  color: color.accent600,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+  marginBottom: space.s2,
 };
 
 const sectionBody: React.CSSProperties = {
-  fontSize: 13,
-  lineHeight: 1.6,
-  color: '#412402',
+  fontSize: text.base,
+  lineHeight: 1.75,
+  color: color.ink900,
   whiteSpace: 'pre-wrap',
 };
 
 const hintLine: React.CSSProperties = {
-  fontSize: 11,
-  color: '#a16207',
+  fontSize: text.xs,
+  color: color.accent500,
   fontStyle: 'italic',
 };
 
 const cursor: React.CSSProperties = {
-  color: '#185FA5',
+  color: color.accent500,
   marginLeft: 2,
 };
+

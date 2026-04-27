@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
+import { Pencil, Copy, GitBranch, Info, ChevronDown, ChevronRight, Brain, CornerDownRight } from 'lucide-react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage, selectIsMessageReferencedByBranch } from '../store/canvasStore';
 import { toast } from '../store/toastStore';
 import type { Node as NodeType, Message } from '../types';
@@ -6,17 +7,19 @@ import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
 import { AgentTrace } from './AgentTrace';
 import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, performEditMessage } from './nodeActions';
+import { color, text, space, radius, shadow, motion } from '../styles/theme';
 
 // inline：节点展开态内嵌（高度上限 480px，宽度跟随 360px 节点）；
 // fullscreen：大屏 Modal（高度 flex 占满 Modal 内容区，宽度由 Modal 容器决定）。
 type ChatMode = 'inline' | 'fullscreen';
 
-// UserBubbleEditor 取消/提交按钮的胶囊形状（仅这两个按钮还需要胶囊视觉，
-// 因为它们出现在编辑模式下需要明确"主/次按钮"对比，与气泡尾部的工具栏语义不同）。
+// 编辑模式提交/取消按钮的胶囊基线
 const pillBase: React.CSSProperties = {
-  fontSize: 11,
-  padding: '3px 10px',
-  borderRadius: 12,
+  fontSize: text.xs,
+  padding: '5px 14px',
+  borderRadius: radius.pill,
+  fontWeight: 500,
+  cursor: 'pointer',
 };
 
 // 消息工具栏容器：贴在气泡的左下（assistant）或右下（user）外缘，hover 才显示。
@@ -25,7 +28,18 @@ const pillBase: React.CSSProperties = {
 function MessageToolbar({ side, children }: { side: 'left' | 'right'; children: React.ReactNode }) {
   return (
     <div
-      style={{ position: 'absolute', [side]: 0, bottom: -8, display: 'flex', gap: 6 }}
+      style={{
+        position: 'absolute',
+        [side]: 0,
+        bottom: -10,
+        display: 'flex',
+        gap: 4,
+        background: color.raised,
+        padding: '3px 4px',
+        borderRadius: radius.pill,
+        border: `0.5px solid ${color.ink200}`,
+        boxShadow: shadow.sm,
+      }}
       onPointerDown={(e) => e.stopPropagation()}
     >
       {children}
@@ -40,25 +54,31 @@ interface ToolbarIconButtonProps {
   // "持续强调态"：区别于 HTML :active 按下瞬态，这里是受控的常驻高亮
   // （用于 BranchBadge popover 打开期间按钮保持主色，提示当前浮层归属）
   highlighted?: boolean;
-  fontWeight?: 400 | 500;
   children: React.ReactNode;
 }
 
-// 静态样式部分（不依赖 props）提取为模块级常量，避免每次渲染新建对象
 const toolbarButtonBaseStyle: React.CSSProperties = {
   background: 'transparent',
   border: 'none',
-  fontSize: 13,
-  padding: '2px 4px',
+  padding: 0,
+  width: 24,
+  height: 24,
+  borderRadius: radius.pill,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
   lineHeight: 1,
-  transition: 'color 120ms ease',
+  fontSize: text.xs,
+  fontWeight: 500,
+  gap: 3,
 };
 
-// 工具栏内的图标按钮：透明背景，无边框/阴影，仅靠颜色变化提示交互。
-// 默认 #94a3b8（与节点 placeholder 同色），hover/highlighted 变 #6366f1（主色紫），disabled 变 #cbd5e1。
-function ToolbarIconButton({ onClick, title, disabled, highlighted, fontWeight = 400, children }: ToolbarIconButtonProps) {
+// 工具栏内的图标按钮：默认 ink-500，hover/highlighted 切到 accent-500 + 暖色底。
+function ToolbarIconButton({ onClick, title, disabled, highlighted, children }: ToolbarIconButtonProps) {
   const [hovered, setHovered] = useState(false);
-  const color = disabled ? '#cbd5e1' : (hovered || highlighted ? '#6366f1' : '#94a3b8');
+  const active = !disabled && (hovered || highlighted);
+  const textColor = disabled ? color.ink300 : (active ? color.accent600 : color.ink500);
+  const bg = active ? color.accent50 : 'transparent';
   return (
     <button
       onPointerDown={(e) => e.stopPropagation()}
@@ -73,9 +93,12 @@ function ToolbarIconButton({ onClick, title, disabled, highlighted, fontWeight =
       disabled={disabled}
       style={{
         ...toolbarButtonBaseStyle,
-        color,
-        fontWeight,
+        color: textColor,
+        background: bg,
         cursor: disabled ? 'not-allowed' : 'pointer',
+        width: 'auto',
+        minWidth: 24,
+        padding: '0 6px',
       }}
     >
       {children}
@@ -111,10 +134,10 @@ export function NodeChatPanel({ node, isStreaming, mode }: NodeChatPanelProps) {
   }, [mode, isStreaming]);
 
   const handleSend = async () => {
-    const text = draft.trim();
-    if (!text || isStreaming) return;
+    const textContent = draft.trim();
+    if (!textContent || isStreaming) return;
     setDraft('');
-    await performSendMessage(node.id, text);
+    await performSendMessage(node.id, textContent);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -178,12 +201,12 @@ function RefinedNodeBody({ messages, onActivate, mode }: { messages: Message[]; 
 function DialogueNodeBody({ node, messages, onActivate, mode }: { node: NodeType; messages: Message[]; onActivate: () => void; mode: ChatMode }) {
   return (
     <div
-      style={bodyContainerStyle(mode, mode === 'fullscreen' ? '16px 24px' : '8px 12px')}
+      style={bodyContainerStyle(mode, mode === 'fullscreen' ? `${space.s5}px ${space.s7}px` : `${space.s4}px ${space.s4}px`)}
       onClick={onActivate}
       onWheel={mode === 'inline' ? handleNodeWheel : undefined}
     >
       {messages.length === 0 && (
-        <div style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic', padding: '8px 0' }}>
+        <div style={{ color: color.ink400, fontSize: text.sm, fontStyle: 'italic', padding: `${space.s2}px 0` }}>
           输入第一句话开始 →
         </div>
       )}
@@ -206,41 +229,62 @@ interface NodeFooterProps {
 }
 
 function NodeFooter({ isRefined, isStreaming, draft, setDraft, handleKeyDown, onActivate, inputRef, mode }: NodeFooterProps) {
-  const borderColor = isRefined ? '#EAD4A8' : '#EFEDE5';
-  const bg = isRefined ? '#FAEEDA' : '#FCFCFA';
-  const textColor = isRefined ? '#412402' : '#1e293b';
+  const [focused, setFocused] = useState(false);
+  const borderColor = isRefined ? color.accent200 : color.ink200;
+  const bg = isRefined ? color.warm : color.paper;
+  const innerBg = isRefined ? '#FBF3DF' : color.raised;
+  const textColor = isRefined ? color.accent700 : color.ink900;
   const placeholder = isStreaming ? 'AI 正在回复…' : '继续这个对话…';
-  const padding = mode === 'fullscreen' ? '12px 24px' : '10px 14px';
-  const fontSize = 14;
+  const padding = mode === 'fullscreen' ? `${space.s4}px ${space.s7}px ${space.s5}px` : `${space.s3}px ${space.s4}px ${space.s4}px`;
   const rows = mode === 'fullscreen' ? 3 : 2;
 
   return (
-    <div style={{ borderTop: `0.5px solid ${borderColor}`, padding, display: 'flex', alignItems: 'flex-end', gap: 6, background: bg }}>
-      {isRefined && (
-        <span title="此节点继续对话只用提炼内容作为上下文，不带入原节点完整对话" style={{ fontSize: 11, color: '#BA7517', cursor: 'help' }}>
-          ⓘ
-        </span>
-      )}
-      <textarea
-        ref={inputRef}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onClick={onActivate}
-        placeholder={placeholder}
-        disabled={isStreaming}
-        rows={rows}
+    <div style={{ borderTop: `0.5px solid ${borderColor}`, padding, background: bg }}>
+      <div
         style={{
-          flex: 1,
-          border: 'none',
-          outline: 'none',
-          resize: 'none',
-          fontSize,
-          fontFamily: 'inherit',
-          background: 'transparent',
-          color: textColor,
+          display: 'flex',
+          alignItems: 'flex-end',
+          gap: space.s2,
+          background: innerBg,
+          padding: `${space.s2}px ${space.s3}px`,
+          borderRadius: radius.md,
+          border: `1px solid ${focused ? color.accent400 : color.ink200}`,
+          boxShadow: focused ? `0 0 0 3px ${color.accent50}` : 'none',
+          transition: `border-color ${motion.durFast}ms ${motion.easeInOut}, box-shadow ${motion.durFast}ms ${motion.easeInOut}`,
         }}
-      />
+      >
+        {isRefined && (
+          <span
+            title="此节点继续对话只用提炼内容作为上下文，不带入原节点完整对话"
+            style={{ display: 'inline-flex', color: color.accent500, cursor: 'help', paddingTop: 4 }}
+          >
+            <Info size={14} strokeWidth={1.8} />
+          </span>
+        )}
+        <textarea
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onClick={onActivate}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+          disabled={isStreaming}
+          rows={rows}
+          style={{
+            flex: 1,
+            border: 'none',
+            outline: 'none',
+            resize: 'none',
+            fontSize: text.base,
+            lineHeight: 1.6,
+            fontFamily: 'inherit',
+            background: 'transparent',
+            color: textColor,
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -252,10 +296,8 @@ interface BubbleProps {
 }
 
 // MessageBubble 只做用户/助手分流，把渲染细节下沉到 UserBubble / AssistantBubble。
-// 拆分原因：原 MessageBubble 单函数承载 7 类条件渲染（启动提示/AgentTrace/Reasoning/
-// 用户气泡/助手气泡/流式光标/分支按钮）+ mode 参数三元，CCN 23 超阈值（>15）。
 function MessageBubble({ message, onBranch, mode }: BubbleProps) {
-  const fontSize = 14;
+  const fontSize = text.base;
   const maxWidth = mode === 'fullscreen' ? '78%' : '94%';
   if (message.role === 'user') {
     return <UserBubble message={message} fontSize={fontSize} maxWidth={maxWidth} />;
@@ -270,20 +312,16 @@ function MessageBubble({ message, onBranch, mode }: BubbleProps) {
   );
 }
 
-// 用户气泡：纯文本展示 + hover 显示工具栏（编辑按钮）+ 内联编辑模式。
-// 编辑提交走 performEditMessage（截断 + 重发）；按钮在节点流式中或消息被分支引用时禁用。
+// 用户气泡：暖色底（accent-50）+ 圆角 md。hover 显示工具栏（编辑按钮）+ 内联编辑模式。
 function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSize: number; maxWidth: string }) {
   const [hover, setHover] = useState(false);
-  // hover 触发后需等 80ms 延迟计时器到期才翻 true，以过滤快速划过的误触（与 AssistantBubble 同款）
   const [showToolbar, setShowToolbar] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
-  // 两次独立订阅而非合并：让两个条件各自精确追踪所需切片，
-  // 避免合并后任一无关状态变化（如其他节点 streaming）触发整个 UserBubble 重渲
   const isReferenced = useCanvasStore((s) => selectIsMessageReferencedByBranch(s, message.nodeId, message.sequence));
   const isNodeStreaming = useCanvasStore((s) => s.streamingByNode[message.nodeId] === 'streaming');
 
-  // 80ms hover 延迟避免快速划过时按钮闪烁（视觉规范文档"微交互手感"建议）
+  // 80ms hover 延迟避免快速划过时按钮闪烁
   useEffect(() => {
     if (!hover) {
       setShowToolbar(false);
@@ -299,14 +337,13 @@ function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSiz
   };
   const cancelEdit = () => setEditing(false);
   const submitEdit = () => {
-    const text = draft.trim();
-    // 空内容或内容未改变时静默取消——避免触发一次无意义的截断+重发
-    if (!text || text === message.content) {
+    const textContent = draft.trim();
+    if (!textContent || textContent === message.content) {
       setEditing(false);
       return;
     }
     setEditing(false);
-    void performEditMessage(message.nodeId, message.sequence, text);
+    void performEditMessage(message.nodeId, message.sequence, textContent);
   };
 
   if (editing) {
@@ -335,18 +372,20 @@ function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSiz
       data-message-id={message.id}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}
+      style={{ marginBottom: space.s5, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}
     >
       <div style={{ position: 'relative', maxWidth }}>
         <div
           style={{
-            background: '#eef2ff',
-            color: '#1e293b',
-            padding: '8px 12px',
-            borderRadius: 6,
+            background: color.tint,
+            color: color.ink900,
+            padding: `${space.s3}px ${space.s4}px`,
+            borderRadius: radius.md,
+            borderTopRightRadius: radius.sm,
             fontSize,
             lineHeight: 1.65,
             whiteSpace: 'pre-wrap',
+            border: `0.5px solid ${color.accent100}`,
           }}
         >
           {message.content}
@@ -358,7 +397,7 @@ function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSiz
               disabled={editDisabled}
               title={editDisabled ? disabledTooltip : '编辑此消息并重新生成 AI 回复'}
             >
-              ✎
+              <Pencil size={13} strokeWidth={1.8} />
             </ToolbarIconButton>
           </MessageToolbar>
         )}
@@ -397,8 +436,11 @@ function UserBubbleEditor({ messageId, draft, setDraft, onSubmit, onCancel, font
   };
 
   return (
-    <div data-message-id={messageId} style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-      <div style={{ maxWidth, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+    <div
+      data-message-id={messageId}
+      style={{ marginBottom: space.s5, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}
+    >
+      <div style={{ maxWidth, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: space.s2 }}>
         <textarea
           ref={taRef}
           value={draft}
@@ -408,31 +450,43 @@ function UserBubbleEditor({ messageId, draft, setDraft, onSubmit, onCancel, font
           rows={Math.min(8, Math.max(2, draft.split('\n').length))}
           style={{
             width: '100%',
-            background: '#eef2ff',
-            color: '#1e293b',
-            padding: '8px 12px',
-            border: '1px solid #c7d2fe',
-            borderRadius: 6,
+            background: color.tint,
+            color: color.ink900,
+            padding: `${space.s3}px ${space.s4}px`,
+            border: `1px solid ${color.accent400}`,
+            borderRadius: radius.md,
             fontSize,
             fontFamily: 'inherit',
             lineHeight: 1.65,
             resize: 'vertical',
             outline: 'none',
             boxSizing: 'border-box',
+            boxShadow: `0 0 0 3px ${color.accent50}`,
           }}
         />
-        <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
+        <div style={{ display: 'flex', gap: space.s2 }}>
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onCancel(); }}
-            style={{ ...pillBase, border: '1px solid #e2e8f0', background: '#ffffff', color: '#64748b', cursor: 'pointer' }}
+            style={{
+              ...pillBase,
+              border: `1px solid ${color.ink200}`,
+              background: color.raised,
+              color: color.ink600,
+            }}
           >
             取消
           </button>
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onSubmit(); }}
-            style={{ ...pillBase, border: '1px solid #6366f1', background: '#6366f1', color: '#ffffff', cursor: 'pointer' }}
+            style={{
+              ...pillBase,
+              border: `1px solid ${color.accent500}`,
+              background: color.accent500,
+              color: '#FFFFFF',
+              boxShadow: shadow.accent,
+            }}
           >
             提交并重新生成
           </button>
@@ -449,20 +503,16 @@ interface AssistantBubbleProps {
   maxWidth: string;
 }
 
-// 助手气泡：含 AgentTrace / Reasoning / 启动提示 / 流式光标 / 工具栏（复制 / 分支 / 分支徽章）。
-// 工具栏左下浮出，hover 80ms 触发显示；BranchBadge popover 打开时强制保持工具栏可见，
-// 避免用户鼠标移到浮层上时工具栏消失带飞 popover。
+// 助手气泡：浅暖白底（surface-soft）+ 圆角 md。
+// 含 AgentTrace / Reasoning / 启动提示 / 流式光标 / 工具栏（复制 / 分支 / 分支徽章）。
 function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBubbleProps) {
   const [hover, setHover] = useState(false);
-  // hover 触发后需等 80ms 延迟计时器到期才翻 true，以过滤快速划过的误触
   const [hoverDelayElapsed, setHoverDelayElapsed] = useState(false);
-  // 分支徽章 popover 状态提升到这里：popover 打开时即使 hover 离开气泡，工具栏也要保持显示
   const [popoverOpen, setPopoverOpen] = useState(false);
   const hasBranches = useCanvasStore(
     (s) => selectBranchesFromMessage(s, message.nodeId, message.sequence).length > 0,
   );
 
-  // 80ms hover 延迟避免快速划过时按钮闪烁（视觉规范文档"微交互手感"建议）
   useEffect(() => {
     if (!hover) {
       setHoverDelayElapsed(false);
@@ -475,11 +525,7 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
   const hasReasoning = !!message.reasoningContent && message.reasoningContent.length > 0;
   const hasAgentTrace = !!message.agentTrace && message.agentTrace.length > 0;
   const isStreaming = message.status === 'streaming';
-  // 启动过渡（文档 §4.5）：streaming 已开始但 content/reasoning/trace 全空的瞬间
-  // 显示"AI 正在准备工具调用…"，让用户对按下 Enter 后的等待有明确反馈
   const showStartupHint = isStreaming && !hasAgentTrace && !hasReasoning && !message.content;
-  // 工具栏显示条件：消息完成 && (hover 延迟到期 || popover 打开)；popoverOpen 兜底确保
-  // 用户点开分支徽章浮层后即使鼠标离开气泡，工具栏与浮层都保持可见，直到用户点击外部关闭
   const showToolbar = message.status === 'complete' && (hoverDelayElapsed || popoverOpen);
 
   const handleCopy = async () => {
@@ -506,7 +552,7 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        marginBottom: 12,
+        marginBottom: space.s5,
         position: 'relative',
         display: 'flex',
         flexDirection: 'column',
@@ -528,21 +574,40 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
       <div
         style={{
           maxWidth,
-          color: '#1e293b',
+          color: color.ink900,
           fontSize,
-          lineHeight: 1.65,
+          lineHeight: 1.75,
+          background: color.soft,
+          padding: `${space.s3}px ${space.s4}px`,
+          borderRadius: radius.md,
+          borderTopLeftRadius: radius.sm,
+          border: `0.5px solid ${color.ink200}`,
+          position: 'relative',
         }}
       >
         <MarkdownContent content={message.content} isStreaming={isStreaming} />
-        {isStreaming && <span style={{ color: '#6366f1', marginLeft: 2 }}>▍</span>}
+        {isStreaming && (
+          <span
+            style={{
+              display: 'inline-block',
+              width: 8,
+              height: '1em',
+              background: color.accent500,
+              marginLeft: 3,
+              verticalAlign: 'text-bottom',
+              animation: 'blink 1.06s step-end infinite',
+              borderRadius: 1,
+            }}
+          />
+        )}
       </div>
       {showToolbar && (
         <MessageToolbar side="left">
           <ToolbarIconButton onClick={handleCopy} title="复制此消息原文（保留 markdown）">
-            📋
+            <Copy size={13} strokeWidth={1.8} />
           </ToolbarIconButton>
           <ToolbarIconButton onClick={onBranch} title="从这里分支（基于此消息创建子节点）">
-            ↳
+            <GitBranch size={13} strokeWidth={1.8} />
           </ToolbarIconButton>
           {hasBranches && (
             <BranchBadgeButton
@@ -560,7 +625,6 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
 
 // execCommand 兜底路径：navigator.clipboard 在 Electron file:// 协议或旧版 WebView
 // 非安全上下文下会缺失或抛权限错误，此时退回 textarea+select+execCommand 方案。
-// 插入到屏幕外（left:-9999px）而非 display:none，是因为 select() 对不可见元素无效。
 function copyViaExecCommand(text: string) {
   const ta = document.createElement('textarea');
   ta.value = text;
@@ -573,8 +637,7 @@ function copyViaExecCommand(text: string) {
   if (!ok) throw new Error('execCommand copy failed');
 }
 
-// 工具栏内的"已派生 N 个分支"按钮：图标态（⑂N），点击展开浮层列出所有子分支。
-// open 状态由父 AssistantBubble 受控，让父组件能在 popover 打开时延长工具栏的可见时间。
+// 工具栏内的"已派生 N 个分支"按钮：图标态（GitBranch + 数字），点击展开浮层列出所有子分支。
 interface BranchBadgeButtonProps {
   nodeId: string;
   sequence: number;
@@ -586,8 +649,6 @@ function BranchBadgeButton({ nodeId, sequence, open, onOpenChange }: BranchBadge
   const branches = useCanvasStore((s) => selectBranchesFromMessage(s, nodeId, sequence));
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // 浮层打开时监听全局 pointerdown，点击容器外即关闭；onOpenChange 同步翻转，
-  // 让父组件能据此释放工具栏 popoverOpen 状态
   useEffect(() => {
     if (!open) return;
     const handler = (e: PointerEvent) => {
@@ -607,37 +668,36 @@ function BranchBadgeButton({ nodeId, sequence, open, onOpenChange }: BranchBadge
         onClick={() => onOpenChange(!open)}
         title={`已派生 ${branches.length} 个分支`}
         highlighted={open}
-        fontWeight={500}
       >
-        ⑂ {branches.length}
+        <GitBranch size={13} strokeWidth={1.8} />
+        <span style={{ fontSize: text.xs, fontWeight: 600 }}>{branches.length}</span>
       </ToolbarIconButton>
       {open && (
         <div
           style={{
             position: 'absolute',
             left: 0,
-            bottom: 28,
-            minWidth: 180,
-            maxWidth: 260,
-            background: '#ffffff',
-            border: '1px solid #c7d2fe',
-            borderRadius: 6,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-            padding: 4,
+            bottom: 32,
+            minWidth: 200,
+            maxWidth: 280,
+            background: color.raised,
+            border: `0.5px solid ${color.ink200}`,
+            borderRadius: radius.md,
+            boxShadow: shadow.lg,
+            padding: space.s1,
             zIndex: 10,
+            animation: `modal-in ${motion.durFast}ms ${motion.easeOutSoft}`,
           }}
         >
-          <div style={{ fontSize: 10, color: '#94a3b8', padding: '4px 8px' }}>
+          <div style={{ fontSize: text.xs, color: color.ink500, padding: `6px 10px`, fontWeight: 500 }}>
             派生分支（{branches.length}）
           </div>
           {branches.map(({ edge, childNode }) => (
-            <button
+            <BranchListItem
               key={edge.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                // 跳子节点定位到它的"分支起点"——sequence=0 的第一条消息（通常是 user 首问）；
-                // 子节点尚无消息时传 null，focusNodeOnMessage 跳过滚动只展开 + pan。
-                // 通过 getState() 按需读取避免订阅整个 messages 字典导致任意消息更新都重渲徽章
+              childNodeId={childNode.id}
+              title={childNode.title ?? '新节点'}
+              onSelect={() => {
                 const allMessages = useCanvasStore.getState().messages;
                 const firstMsg = Object.values(allMessages)
                   .filter((m) => m.nodeId === childNode.id)
@@ -645,26 +705,7 @@ function BranchBadgeButton({ nodeId, sequence, open, onOpenChange }: BranchBadge
                 focusNodeOnMessage(childNode.id, firstMsg?.id ?? null);
                 onOpenChange(false);
               }}
-              style={{
-                display: 'block',
-                width: '100%',
-                textAlign: 'left',
-                background: 'transparent',
-                border: 'none',
-                padding: '6px 8px',
-                borderRadius: 4,
-                fontSize: 12,
-                color: '#1e293b',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis',
-                overflow: 'hidden',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = '#F5F3FF')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            >
-              ↳ {childNode.title ?? '新节点'}
-            </button>
+            />
           ))}
         </div>
       )}
@@ -672,16 +713,69 @@ function BranchBadgeButton({ nodeId, sequence, open, onOpenChange }: BranchBadge
   );
 }
 
+function BranchListItem({ childNodeId, title, onSelect }: { childNodeId: string; title: string; onSelect: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      data-child-node-id={childNodeId}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        width: '100%',
+        textAlign: 'left',
+        background: hover ? color.accent50 : 'transparent',
+        border: 'none',
+        padding: '7px 10px',
+        borderRadius: radius.sm,
+        fontSize: text.sm,
+        color: color.ink800,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        textOverflow: 'ellipsis',
+        overflow: 'hidden',
+      }}
+    >
+      <CornerDownRight size={13} strokeWidth={1.8} style={{ color: color.accent500, flexShrink: 0 }} />
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
+    </button>
+  );
+}
+
+const dotPulse0: React.CSSProperties = { width: 4, height: 4, borderRadius: '50%', background: color.accent400, animation: 'blink 1.2s ease-in-out 0s infinite' };
+const dotPulse1: React.CSSProperties = { width: 4, height: 4, borderRadius: '50%', background: color.accent400, animation: 'blink 1.2s ease-in-out 0.2s infinite' };
+const dotPulse2: React.CSSProperties = { width: 4, height: 4, borderRadius: '50%', background: color.accent400, animation: 'blink 1.2s ease-in-out 0.4s infinite' };
+
 function StartupHint() {
   return (
-    <div style={{ fontSize: 11, color: '#cbd5e1', fontStyle: 'italic', marginBottom: 4 }}>
+    <div
+      style={{
+        fontSize: text.xs,
+        color: color.ink400,
+        fontStyle: 'italic',
+        marginBottom: 6,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+      }}
+    >
+      <span style={{ display: 'inline-flex', gap: 3 }}>
+        <span style={dotPulse0} />
+        <span style={dotPulse1} />
+        <span style={dotPulse2} />
+      </span>
       AI 正在准备工具调用…
     </div>
   );
 }
 
-// AI reasoning（思考过程）展示块：边沿触发自动折叠，仅在 streaming → complete 那一次状态转换时
-// 触发自动折叠定时器；用户后续手动展开不会被定时器吞掉（依赖只有 isStreaming）。
+// AI reasoning（思考过程）展示块：边沿触发自动折叠。
 function ReasoningBlock({ content, isStreaming }: { content: string; isStreaming: boolean }) {
   const [expanded, setExpanded] = useState(isStreaming);
   const prevStreamingRef = useRef(isStreaming);
@@ -700,25 +794,28 @@ function ReasoningBlock({ content, isStreaming }: { content: string; isStreaming
       onClick={() => setExpanded(!expanded)}
       style={{
         cursor: 'pointer',
-        fontSize: 11,
-        color: '#94a3b8',
-        background: '#f8fafc',
-        border: '1px dashed #e2e8f0',
-        borderRadius: 4,
-        padding: '4px 8px',
-        marginBottom: 4,
+        fontSize: text.xs,
+        color: color.ink600,
+        background: 'rgba(245, 233, 210, 0.45)',
+        border: `0.5px solid ${color.accent200}`,
+        borderRadius: radius.md,
+        padding: `${space.s2}px ${space.s3}px`,
+        marginBottom: space.s2,
         maxWidth: '94%',
+        display: 'flex',
+        gap: 6,
+        flexDirection: 'column',
       }}
     >
-      {expanded ? (
-        <>
-          <span style={{ fontWeight: 500 }}>💭 思考过程</span>
-          <div style={{ marginTop: 4, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
-            {content}
-          </div>
-        </>
-      ) : (
-        <span>💭 思考过程（点击展开）</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontWeight: 500, color: color.accent700 }}>
+        <Brain size={12} strokeWidth={1.8} />
+        <span style={{ flex: 1 }}>思考过程</span>
+        {expanded ? <ChevronDown size={12} strokeWidth={1.8} /> : <ChevronRight size={12} strokeWidth={1.8} />}
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 2, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontStyle: 'italic' }}>
+          {content}
+        </div>
       )}
     </div>
   );

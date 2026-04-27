@@ -2,30 +2,25 @@
 // 接受 message.agentTrace 序列，按 thought / action+observation / final 分行渲染。
 //
 // 行为约定（R015 / 文档 §4.4）：
-// - 实时进行中：默认展开，新 step 流入；右上角中断按钮（M5 接通真实中断 API，M4 仅 disabled UI）
-// - 跑完：状态从 streaming → complete 边沿触发自动折叠成单行汇总（与 reasoningContent 边沿触发同源）
+// - 实时进行中：默认展开，新 step 流入；右上角中断按钮
+// - 跑完：状态从 streaming → complete 边沿触发自动折叠成单行汇总
 // - 长 thought：>60 字默认省略，点开看完整
-// - 失败 step：✕ + #A32D2D 暗红色，与正常 step 视觉清晰区分
+// - 失败 step：✕ + 暖红色，与正常 step 视觉清晰区分
 
 import { useState, useRef, useEffect } from 'react';
+import { ChevronDown, ChevronRight, X, Search, Globe, Hammer } from 'lucide-react';
 import type { AgentStep, AgentFinalReason, ToolName } from '../types';
+import { color, text, space, radius } from '../styles/theme';
 
 interface Props {
   trace: AgentStep[];
   isStreaming: boolean;
-  // M5 起：节点 id 用于中断 API 调用；M4 阶段为 undefined 时按钮 disabled（向后兼容兜底）
   nodeId?: string;
-  // M5 起：用户点击中断时调用；调用方负责调 api.abortStream(nodeId)
   onAbort?: (nodeId: string) => void;
 }
 
 export function AgentTrace({ trace, isStreaming, nodeId, onAbort }: Props) {
   const [expanded, setExpanded] = useState(true);
-  // streaming → complete 边沿触发自动折叠（与 ReasoningBlock 同模式）：
-  // useEffect 重跑前 prevStreamingRef.current 已是上次的 isStreaming；本次先读 wasStreaming
-  // 再立即赋值为最新 isStreaming，使"streaming→complete"只在那一次 effect 满足
-  // wasStreaming=true && !isStreaming，之后无论 effect 是否重跑都不会再触发。
-  // 用户手动展开（complete 阶段 toggle expanded）不进入此 effect 依赖，永不触发自动折叠。
   const prevStreamingRef = useRef(isStreaming);
   useEffect(() => {
     const wasStreaming = prevStreamingRef.current;
@@ -61,11 +56,9 @@ function ExpandedTrace({ trace, onCollapse }: { trace: AgentStep[]; onCollapse: 
     if (step.type === 'thought') {
       rendered.push(<ThoughtLine key={step.id} content={step.content} />);
     } else if (step.type === 'action') {
-      // 把后续紧跟的 observation 配对合并到同一行（按 toolCallId 匹配）
       const obs = findObservationFor(trace, i, step.toolCallId);
       rendered.push(<ActionLine key={step.id} action={step} observation={obs} />);
     } else if (step.type === 'observation') {
-      // 通常已被 action 行吸收；只在异常缺失对应 action 时单独渲染
       const orphan = !trace.slice(0, i).some(
         (s) => s.type === 'action' && s.toolCallId === step.toolCallId,
       );
@@ -102,9 +95,9 @@ function ThoughtLine({ content }: { content: string }) {
   const display = !isTruncatable || open ? content : `${content.slice(0, 60)}…`;
   return (
     <div style={lineStyle}>
-      <span style={dotIcon}>●</span>
+      <span style={iconSlot}><span style={dot} /></span>
       <span style={{ flex: 1, whiteSpace: 'pre-wrap' }}>
-        <span style={labelStyle}>Thought：</span>
+        <span style={labelStyle}>Thought</span>
         {display}
         {isTruncatable && !open && (
           <button onClick={() => setOpen(true)} style={inlineLinkBtn}>展开</button>
@@ -129,14 +122,26 @@ function ActionLine({ action, observation }: ActionLineProps) {
       : `失败（${observation.errorReason ?? 'unknown'}）`;
   return (
     <div style={lineStyle}>
-      <span style={failed ? failIcon : arrowIcon}>{failed ? '✕' : '→'}</span>
+      <span style={iconSlot}>
+        {failed ? (
+          <X size={11} strokeWidth={2.2} color={color.danger} />
+        ) : (
+          <ToolIcon toolName={action.toolName} />
+        )}
+      </span>
       <span style={{ flex: 1 }}>
-        {actionDesc}
-        <span style={{ margin: '0 6px', color: '#cbd5e1' }}>→</span>
-        <span style={{ color: failed ? '#A32D2D' : '#475569' }}>{obsDesc}</span>
+        <span style={{ color: color.ink700 }}>{actionDesc}</span>
+        <span style={{ margin: '0 6px', color: color.ink300 }}>→</span>
+        <span style={{ color: failed ? color.danger : color.ink600 }}>{obsDesc}</span>
       </span>
     </div>
   );
+}
+
+function ToolIcon({ toolName }: { toolName: ToolName | string }) {
+  if (toolName === 'web_search') return <Search size={11} strokeWidth={2} color={color.accent500} />;
+  if (toolName === 'fetch_page') return <Globe size={11} strokeWidth={2} color={color.accent500} />;
+  return <Hammer size={11} strokeWidth={2} color={color.accent500} />;
 }
 
 function OrphanObservationLine({ observation }: { observation: Extract<AgentStep, { type: 'observation' }> }) {
@@ -146,8 +151,10 @@ function OrphanObservationLine({ observation }: { observation: Extract<AgentStep
     : observation.result ?? '已完成';
   return (
     <div style={lineStyle}>
-      <span style={failed ? failIcon : arrowIcon}>{failed ? '✕' : '→'}</span>
-      <span style={{ flex: 1, color: failed ? '#A32D2D' : '#475569' }}>{desc}</span>
+      <span style={iconSlot}>
+        {failed ? <X size={11} strokeWidth={2.2} color={color.danger} /> : <span style={dot} />}
+      </span>
+      <span style={{ flex: 1, color: failed ? color.danger : color.ink600 }}>{desc}</span>
     </div>
   );
 }
@@ -155,9 +162,9 @@ function OrphanObservationLine({ observation }: { observation: Extract<AgentStep
 function FinalLine({ reason }: { reason: AgentFinalReason }) {
   return (
     <div style={lineStyle}>
-      <span style={dotIcon}>●</span>
+      <span style={iconSlot}><span style={{ ...dot, background: color.moss500 }} /></span>
       <span style={{ flex: 1 }}>
-        <span style={labelStyle}>Thought：</span>
+        <span style={labelStyle}>Final</span>
         {describeFinalReason(reason)}
       </span>
     </div>
@@ -170,7 +177,9 @@ function CollapsedSummary({ trace, onExpand }: { trace: AgentStep[]; onExpand: (
   const summary = buildSummary(trace);
   return (
     <button onClick={onExpand} style={collapsedSummaryBtn}>
-      ▸ AI {summary}（展开 ↓）
+      <ChevronRight size={12} strokeWidth={2} />
+      <span style={{ flex: 1 }}>AI {summary}</span>
+      <span style={{ color: color.ink400, fontSize: text.xs }}>展开</span>
     </button>
   );
 }
@@ -190,26 +199,41 @@ function buildSummary(trace: AgentStep[]): string {
   return parts.join(' / ');
 }
 
-// ============== 中断按钮（M4 视觉就位 / M5 接通行为）==============
+// ============== 中断按钮 ==============
 
 function AbortButton({ enabled, onAbort }: { enabled: boolean; onAbort: () => void }) {
-  // R015 落地（M5 撤销 M4 临时豁免）：流式期间始终可点。
-  // 仅当调用方未传 nodeId/onAbort（极少见的兜底）时按钮回退 disabled
+  const [hover, setHover] = useState(false);
   return (
     <button
-      // onPointerDown stopPropagation：阻止事件在 capture 阶段被拖拽层捕获并调用
-      // setPointerCapture，否则后续 pointermove 会被节点拖拽消费（视觉规范 §"拖拽与 setPointerCapture"）
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         if (enabled) onAbort();
       }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       disabled={!enabled}
       title={enabled ? '中断当前任务' : '中断功能尚未就绪'}
-      style={enabled ? abortBtnStyleEnabled : abortBtnStyle}
+      style={{
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        background: enabled && hover ? color.danger : 'transparent',
+        border: `0.5px solid ${enabled ? color.danger : color.ink300}`,
+        color: enabled && hover ? '#fff' : (enabled ? color.danger : color.ink300),
+        cursor: enabled ? 'pointer' : 'not-allowed',
+        fontSize: text.xs,
+        padding: 0,
+        width: 22,
+        height: 22,
+        borderRadius: radius.pill,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
       aria-label="中断当前任务"
     >
-      ⨯
+      <X size={12} strokeWidth={2} />
     </button>
   );
 }
@@ -217,7 +241,8 @@ function AbortButton({ enabled, onAbort }: { enabled: boolean; onAbort: () => vo
 function CollapseButton({ onClick }: { onClick: () => void }) {
   return (
     <button onClick={onClick} style={collapseLinkBtn} aria-label="折叠">
-      ▾ 折叠
+      <ChevronDown size={12} strokeWidth={2} />
+      折叠
     </button>
   );
 }
@@ -249,107 +274,90 @@ function describeFinalReason(reason: AgentFinalReason): string {
   }
 }
 
-// ============== 样式（R013 token 对齐：11px 字号档 / text-secondary）==============
+// ============== 样式 ==============
 
 const containerStyle: React.CSSProperties = {
-  background: '#F5F4EE',
-  borderRadius: 6,
-  padding: '10px 12px',
-  fontSize: 11,
-  color: '#94a3b8',
-  marginBottom: 4,
+  background: 'rgba(245, 233, 210, 0.5)',
+  border: `0.5px solid ${color.accent200}`,
+  borderRadius: radius.md,
+  padding: `${space.s3}px ${space.s4}px`,
+  fontSize: text.xs,
+  color: color.ink600,
+  marginBottom: space.s2,
   position: 'relative',
   maxWidth: '94%',
-  lineHeight: 1.6,
+  lineHeight: 1.7,
 };
 
 const lineStyle: React.CSSProperties = {
   display: 'flex',
-  gap: 6,
-  marginBottom: 6,
+  gap: 8,
+  marginBottom: 5,
   alignItems: 'flex-start',
 };
 
-const dotIcon: React.CSSProperties = {
-  color: '#94a3b8',
-  fontSize: 8,
-  lineHeight: '18px',
-  width: 12,
-  textAlign: 'center',
+const iconSlot: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 14,
+  height: 18,
   flexShrink: 0,
 };
 
-const arrowIcon: React.CSSProperties = {
-  color: '#94a3b8',
-  width: 12,
-  textAlign: 'center',
-  flexShrink: 0,
-};
-
-const failIcon: React.CSSProperties = {
-  color: '#A32D2D',
-  width: 12,
-  textAlign: 'center',
-  flexShrink: 0,
-  fontWeight: 500,
+const dot: React.CSSProperties = {
+  display: 'inline-block',
+  width: 5,
+  height: 5,
+  borderRadius: '50%',
+  background: color.accent500,
 };
 
 const labelStyle: React.CSSProperties = {
-  fontWeight: 500,
-  color: '#475569',
-  marginRight: 4,
+  fontWeight: 600,
+  color: color.accent700,
+  marginRight: 6,
+  fontSize: 11,
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
 };
 
 const inlineLinkBtn: React.CSSProperties = {
   background: 'transparent',
   border: 'none',
-  color: '#6366f1',
-  fontSize: 11,
+  color: color.accent600,
+  fontSize: text.xs,
   padding: 0,
   marginLeft: 4,
   cursor: 'pointer',
   textDecoration: 'underline',
+  fontWeight: 500,
 };
 
 const collapseLinkBtn: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
   background: 'transparent',
   border: 'none',
-  color: '#94a3b8',
-  fontSize: 11,
-  padding: '2px 0',
+  color: color.ink500,
+  fontSize: text.xs,
+  padding: '4px 0 0',
   cursor: 'pointer',
   marginTop: 2,
 };
 
 const collapsedSummaryBtn: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
   background: 'transparent',
   border: 'none',
-  color: '#475569',
-  fontSize: 11,
+  color: color.ink700,
+  fontSize: text.xs,
   padding: 0,
   cursor: 'pointer',
   textAlign: 'left',
   width: '100%',
-};
-
-const abortBtnStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 6,
-  right: 8,
-  background: 'transparent',
-  border: 'none',
-  color: '#cbd5e1',
-  cursor: 'not-allowed',
-  fontSize: 13,
-  padding: 0,
-  width: 18,
-  height: 18,
-  lineHeight: '18px',
-};
-
-// 启用态：cursor pointer + 颜色加深 + hover 反馈（CSS 内联无 hover，靠颜色对比表达"可点"）
-const abortBtnStyleEnabled: React.CSSProperties = {
-  ...abortBtnStyle,
-  color: '#475569',
-  cursor: 'pointer',
+  fontWeight: 500,
 };

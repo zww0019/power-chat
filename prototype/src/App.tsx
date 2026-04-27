@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
+import { Sparkles, HelpCircle, Settings as SettingsIcon, MousePointerClick } from 'lucide-react';
 import { useCanvasStore } from './store/canvasStore';
 import { api } from './api/client';
 import { CanvasNode } from './canvas/Node';
@@ -8,18 +9,50 @@ import { SettingsDialog } from './canvas/SettingsDialog';
 import { HelpDialog } from './canvas/HelpDialog';
 import { NodeFullscreenModal } from './canvas/NodeFullscreenModal';
 import { Minimap } from './canvas/Minimap';
+import { ToastContainer } from './canvas/ToastContainer';
+import { color, text, space, radius, shadow, font, motion } from './styles/theme';
 
-const toolbarBtnStyle: CSSProperties = {
+const toolbarIconBtn: CSSProperties = {
   pointerEvents: 'auto',
-  background: '#ffffff',
-  border: '1px solid #e2e8f0',
-  padding: '6px 10px',
-  borderRadius: 6,
+  background: 'transparent',
+  border: 'none',
+  width: 34,
+  height: 34,
+  borderRadius: radius.md,
   cursor: 'pointer',
-  fontSize: 13,
-  color: '#475569',
-  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+  color: color.ink600,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  transition: `background ${motion.durFast}ms ${motion.easeInOut}, color ${motion.durFast}ms ${motion.easeInOut}`,
 };
+
+function ToolbarIconButton({
+  onClick,
+  title,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        ...toolbarIconBtn,
+        background: hover ? color.ink100 : 'transparent',
+        color: hover ? color.accent600 : color.ink600,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
 export default function App() {
   const canvas = useCanvasStore((s) => s.canvas);
@@ -63,7 +96,6 @@ export default function App() {
   }, [hydrated]);
 
   // 全局键盘监听：Delete / Backspace 删除 selectedEdgeId 或 activeNodeId。
-  // 焦点在输入控件中时不响应，避免吞掉文本编辑。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
@@ -73,7 +105,6 @@ export default function App() {
         if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
       }
       const state = useCanvasStore.getState();
-      // 边删除优先级高于节点
       if (state.selectedEdgeId) {
         const edgeId = state.selectedEdgeId;
         e.preventDefault();
@@ -115,7 +146,6 @@ export default function App() {
     }
   }, [canvas]);
 
-  // 平移视野 + 节点拖动 - 用 ref 区分两种模式
   const dragRef = useRef<
     | { kind: 'pan'; startClientX: number; startClientY: number; startVx: number; startVy: number }
     | { kind: 'node'; nodeId: string; startClientX: number; startClientY: number; startNodeX: number; startNodeY: number }
@@ -124,11 +154,9 @@ export default function App() {
 
   const handleBackgroundPointerDown = (e: React.PointerEvent) => {
     if (e.target !== e.currentTarget) return;
-    // 点击空白处：清除活跃 + 选中 + popover
     setActiveNode(null);
     clearSelection();
     setRefinePos(null);
-    // 启动平移
     dragRef.current = {
       kind: 'pan',
       startClientX: e.clientX,
@@ -136,7 +164,6 @@ export default function App() {
       startVx: vx,
       startVy: vy,
     };
-    // capture 保证 pointerup/pointermove 在鼠标拖出容器边界时仍能收到
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
@@ -153,8 +180,6 @@ export default function App() {
     }
   };
 
-  // 位移小于该阈值视为单击（展开 collapsed 节点 / 不发位置 PATCH）。
-  // setPointerCapture 会吞掉 click 事件，因此节点的"单击展开"必须在 pointerup 这里判定。
   const CLICK_THRESHOLD = 4;
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -184,13 +209,11 @@ export default function App() {
       const node = useCanvasStore.getState().nodes[nodeId];
       if (!node) return;
 
-      // Shift+点击：多选
       if (e.shiftKey) {
         toggleSelectNode(nodeId);
         return;
       }
 
-      // 普通点击：激活
       setActiveNode(nodeId);
       clearSelection();
 
@@ -202,39 +225,50 @@ export default function App() {
         startNodeX: node.positionX,
         startNodeY: node.positionY,
       };
-      // capture 到容器，确保拖拽跨越节点边界时 move/up 事件不丢失
       (containerRef.current as HTMLElement).setPointerCapture?.(e.pointerId);
     },
     [setActiveNode, clearSelection, toggleSelectNode],
   );
 
-  // 双击空白创建节点（PRD §4.1）
-  const handleBackgroundDoubleClick = async (e: React.MouseEvent) => {
+  // 在指定逻辑坐标处创建对话节点：所有"新建节点"路径（双击 / 空状态主按钮 / 未来快捷键）共用。
+  // 失败 swallow 为 console.error，避免阻断画布交互；失败时画布状态不变。
+  const createNodeAt = useCallback(
+    async (logicalX: number, logicalY: number) => {
+      try {
+        const newNode = await api.createNode({
+          positionX: logicalX,
+          positionY: logicalY,
+          type: 'dialogue',
+        });
+        upsertNode(newNode);
+        setActiveNode(newNode.id);
+      } catch (err) {
+        console.error('create node failed', err);
+      }
+    },
+    [upsertNode, setActiveNode],
+  );
+
+  // 双击空白创建节点（PRD §4.1）：把鼠标落点的屏幕坐标换算为画布逻辑坐标。
+  const handleBackgroundDoubleClick = (e: React.MouseEvent) => {
     if (e.target !== e.currentTarget) return;
-    // 把屏幕坐标转换为画布逻辑坐标
     const rect = containerRef.current!.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
-    const logicalX = (screenX - vx) / zoom;
-    const logicalY = (screenY - vy) / zoom;
-
-    try {
-      const newNode = await api.createNode({
-        positionX: logicalX,
-        positionY: logicalY,
-        type: 'dialogue',
-      });
-      upsertNode(newNode);
-      setActiveNode(newNode.id);
-    } catch (err) {
-      console.error('create node failed', err);
-    }
+    void createNodeAt((screenX - vx) / zoom, (screenY - vy) / zoom);
   };
 
-  // Cmd+滚轮缩放，普通滚轮也支持平移（更直觉）
+  // 空状态主按钮：在视口中心略偏上 80px 创建节点（避开页面顶部工具栏的视觉遮挡）。
+  const createNodeAtViewportCenter = () => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const screenX = rect.width / 2;
+    const screenY = rect.height / 2;
+    void createNodeAt((screenX - vx) / zoom, (screenY - vy) / zoom - 80);
+  };
+
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
-      // 缩放
       const delta = -e.deltaY * 0.001;
       const next = Math.max(0.25, Math.min(2, zoom + delta));
       setZoom(next);
@@ -245,10 +279,8 @@ export default function App() {
     }
   };
 
-  // 触发提炼弹窗（顶部工具栏点击）
   const handleRefineClick = () => {
     if (selectedNodeIds.length === 0) return;
-    // 计算几何中心作为弹窗位置
     let sumX = 0, sumY = 0;
     selectedNodeIds.forEach((id) => {
       const n = nodes[id];
@@ -259,10 +291,8 @@ export default function App() {
     });
     const cx = sumX / selectedNodeIds.length;
     const cy = sumY / selectedNodeIds.length;
-    // 转回屏幕坐标
     const screenX = cx * zoom + vx;
     const screenY = cy * zoom + vy;
-    // E2 决策：保证弹窗在视野内
     const rect = containerRef.current!.getBoundingClientRect();
     const clamped = {
       x: Math.max(20, Math.min(rect.width - 380, screenX - 180)),
@@ -276,87 +306,242 @@ export default function App() {
 
   if (!hydrated) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#94a3b8' }}>
-        正在加载画布…
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100vh',
+          gap: space.s4,
+          background: color.canvas,
+          color: color.ink500,
+          fontFamily: font.sans,
+        }}
+      >
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 56,
+            height: 56,
+            borderRadius: radius.lg,
+            background: color.paper,
+            border: `0.5px solid ${color.ink200}`,
+            boxShadow: shadow.md,
+            color: color.accent500,
+            animation: `spin 1.6s ${motion.easeInOut} infinite`,
+          }}
+        >
+          <Sparkles size={26} strokeWidth={1.6} />
+        </div>
+        <div style={{ fontSize: text.sm, color: color.ink500 }}>正在加载画布…</div>
       </div>
     );
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', userSelect: 'none', background: '#F1EFE8' }}>
-      {/* 顶部工具栏 */}
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        overflow: 'hidden',
+        userSelect: 'none',
+        background: color.canvas,
+        fontFamily: font.sans,
+        color: color.ink900,
+      }}
+    >
+      {/* 顶部浮动工具栏：blur 胶囊 + 三段式（Logo / 中信息 / 右动作）*/}
       <div
         style={{
           position: 'absolute',
-          top: 12,
-          left: 12,
-          right: 12,
+          top: 16,
+          left: 16,
+          right: 16,
           display: 'flex',
           alignItems: 'center',
-          gap: 12,
+          gap: space.s3,
           zIndex: 100,
-          fontFamily: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif',
-          fontSize: 12,
-          color: '#475569',
           pointerEvents: 'none',
         }}
       >
-        <div style={{ pointerEvents: 'auto', background: '#ffffff', padding: '6px 12px', borderRadius: 6, border: '1px solid #e2e8f0', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
-          🧠 思考画布 · MVP 原型
-        </div>
-        <div style={{ flex: 1 }} />
-        {selectedNodeIds.length > 0 && (
-          <button
-            onClick={handleRefineClick}
+        {/* 左：Logo 胶囊 */}
+        <div
+          style={{
+            pointerEvents: 'auto',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'rgba(251, 249, 242, 0.72)',
+            backdropFilter: 'blur(20px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(20px) saturate(140%)',
+            border: `0.5px solid ${color.ink200}`,
+            padding: `8px 14px`,
+            borderRadius: radius.pill,
+            boxShadow: shadow.sm,
+            fontSize: text.sm,
+            fontWeight: 600,
+            color: color.ink800,
+            letterSpacing: '-0.01em',
+          }}
+        >
+          <span
             style={{
-              pointerEvents: 'auto',
-              background: '#185FA5',
-              color: '#ffffff',
-              border: 'none',
-              padding: '6px 14px',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontSize: 12,
-              fontWeight: 500,
-              boxShadow: '0 2px 6px rgba(24,95,165,0.22)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: radius.sm,
+              background: `linear-gradient(135deg, ${color.accent400}, ${color.accent600})`,
+              color: '#FFFFFF',
             }}
           >
-            ◆ 提炼 ({selectedNodeIds.length})
-          </button>
-        )}
-        <div style={{ pointerEvents: 'auto', background: '#ffffff', padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 11, color: '#94a3b8' }}>
-          {allNodes.length} 节点 · 缩放 {Math.round(zoom * 100)}%
+            <Sparkles size={13} strokeWidth={2} />
+          </span>
+          思考画布
         </div>
-        <button onClick={() => setHelpOpen(true)} title="帮助" style={toolbarBtnStyle}>
-          ?
-        </button>
-        <button onClick={() => setSettingsOpen(true)} title="模型设置" style={toolbarBtnStyle}>
-          ⚙
-        </button>
+
+        {/* 中：提炼按钮（多选时） */}
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', gap: space.s3 }}>
+          {selectedNodeIds.length > 0 && (
+            <button
+              onClick={handleRefineClick}
+              style={{
+                pointerEvents: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: `linear-gradient(135deg, ${color.accent500}, ${color.accent600})`,
+                color: '#FFFFFF',
+                border: 'none',
+                padding: '9px 18px',
+                borderRadius: radius.pill,
+                cursor: 'pointer',
+                fontSize: text.sm,
+                fontWeight: 600,
+                letterSpacing: '0.01em',
+                boxShadow: shadow.accent,
+              }}
+            >
+              <Sparkles size={14} strokeWidth={2} />
+              提炼 {selectedNodeIds.length} 个节点
+            </button>
+          )}
+        </div>
+
+        {/* 右：状态信息 + 帮助 / 设置 */}
+        <div
+          style={{
+            pointerEvents: 'auto',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            background: 'rgba(251, 249, 242, 0.72)',
+            backdropFilter: 'blur(20px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(20px) saturate(140%)',
+            border: `0.5px solid ${color.ink200}`,
+            padding: '4px 6px 4px 14px',
+            borderRadius: radius.pill,
+            boxShadow: shadow.sm,
+          }}
+        >
+          <span style={{ fontSize: text.xs, color: color.ink500, fontVariantNumeric: 'tabular-nums', marginRight: 4 }}>
+            {allNodes.length} 节点
+          </span>
+          <span style={{ width: 1, height: 14, background: color.ink200, marginRight: 4 }} />
+          <span style={{ fontSize: text.xs, color: color.ink500, fontVariantNumeric: 'tabular-nums', marginRight: 6 }}>
+            {Math.round(zoom * 100)}%
+          </span>
+          <ToolbarIconButton onClick={() => setHelpOpen(true)} title="帮助">
+            <HelpCircle size={17} strokeWidth={1.6} />
+          </ToolbarIconButton>
+          <ToolbarIconButton onClick={() => setSettingsOpen(true)} title="模型设置">
+            <SettingsIcon size={17} strokeWidth={1.6} />
+          </ToolbarIconButton>
+        </div>
       </div>
 
-      {/* 提示卡片：空画布引导 */}
+      {/* 空状态：插画 + 主标题 + 副标题 + 主按钮 */}
       {allNodes.length === 0 && (
         <div
           style={{
             position: 'absolute',
-            top: '40%',
+            top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
             textAlign: 'center',
-            color: '#94a3b8',
-            fontSize: 14,
+            color: color.ink600,
             zIndex: 50,
             pointerEvents: 'none',
-            fontFamily: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: space.s4,
           }}
         >
-          <div style={{ fontSize: 36, marginBottom: 8 }}>✦</div>
-          <div>双击空白处创建第一个节点</div>
+          <div
+            style={{
+              width: 88,
+              height: 88,
+              borderRadius: radius.xl,
+              background: `linear-gradient(135deg, ${color.accent100}, ${color.warm})`,
+              border: `0.5px solid ${color.accent200}`,
+              boxShadow: shadow.lg,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: color.accent600,
+            }}
+          >
+            <Sparkles size={36} strokeWidth={1.4} />
+          </div>
+          <div>
+            <div
+              style={{
+                fontSize: text.xl,
+                fontWeight: 700,
+                color: color.ink900,
+                letterSpacing: '-0.02em',
+                marginBottom: 6,
+              }}
+            >
+              开始你的思考
+            </div>
+            <div style={{ fontSize: text.sm, color: color.ink500, lineHeight: 1.6 }}>
+              把零散对话编织成可探索的思维网络
+            </div>
+          </div>
+          <button
+            onClick={createNodeAtViewportCenter}
+            style={{
+              pointerEvents: 'auto',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              background: color.ink900,
+              color: '#FFFFFF',
+              border: 'none',
+              padding: '10px 20px',
+              borderRadius: radius.pill,
+              cursor: 'pointer',
+              fontSize: text.sm,
+              fontWeight: 600,
+              boxShadow: shadow.lg,
+            }}
+          >
+            <MousePointerClick size={15} strokeWidth={1.8} />
+            新建节点
+          </button>
+          <div style={{ fontSize: text.xs, color: color.ink400, marginTop: 4 }}>
+            或双击画布任意位置
+          </div>
         </div>
       )}
 
-      {/* 画布主区：纯白底 + 22px 圆点网格（透明度 4.5%）作为空间锚点 */}
+      {/* 画布主区：奶油底 + 暖灰圆点网格 */}
       <div
         ref={containerRef}
         onPointerDown={handleBackgroundPointerDown}
@@ -368,9 +553,9 @@ export default function App() {
         style={{
           position: 'absolute',
           inset: 0,
-          background: '#FFFFFF',
-          backgroundImage: 'radial-gradient(circle, rgba(0,0,0,0.045) 1px, transparent 1px)',
-          backgroundSize: `${22 * zoom}px ${22 * zoom}px`,
+          background: color.paper,
+          backgroundImage: `radial-gradient(circle, rgba(60, 48, 28, 0.06) 1px, transparent 1px)`,
+          backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
           backgroundPosition: `${vx}px ${vy}px`,
           cursor: dragRef.current?.kind === 'pan' ? 'grabbing' : 'default',
         }}
@@ -385,10 +570,7 @@ export default function App() {
             height: 1,
           }}
         >
-          {/* SVG 边层（在节点下方）。svg 容器必须 pointerEvents: 'none'，
-              否则其 20000×20000 的尺寸会吞掉背景双击/拖拽事件；
-              单条边通过自身 pointerEvents="stroke" 在 SVG 中独立打开命中
-              （SVG 子元素可覆盖父级的 'none'）。*/}
+          {/* SVG 边层 */}
           <svg
             style={{
               position: 'absolute',
@@ -424,7 +606,7 @@ export default function App() {
             </g>
           </svg>
 
-          {/* 节点：当画布存在 active node 时，其他节点 dim 至 opacity 0.9（焦点对比） */}
+          {/* 节点 */}
           {allNodes.map((n) => (
             <CanvasNode
               key={n.id}
@@ -448,15 +630,14 @@ export default function App() {
         />
       )}
 
-      {/* 设置弹窗（齿轮按钮触发，或首次启动未配置时强制弹出）*/}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
 
-      {/* 节点大屏对话 Modal（节点 header ⛶ 按钮触发；ESC / 点遮罩关闭）*/}
       <NodeFullscreenModal />
 
-      {/* 全局预览小视窗（右下角）*/}
       <Minimap />
+
+      <ToastContainer />
     </div>
   );
 }

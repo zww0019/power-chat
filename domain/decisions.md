@@ -530,3 +530,44 @@
 - `prototype/src/canvas/NodeChatPanel.tsx` 删除 `pillPrimary` / `EditButton` / `CopyButton` / `BranchButton` / 旧 `BranchBadge`；新增 `MessageToolbar` / `ToolbarIconButton` / `BranchBadgeButton`；handleCopy 内联进 AssistantBubble；引入 `popoverOpen` 状态
 - 后续新增"消息上的 hover 操作按钮"应使用 `MessageToolbar` + `ToolbarIconButton`，而非已删除的 `pillPrimary`；按钮颜色须遵守 R013 中工具栏 token
 
+## D028 · 暖质感视觉系统重做（Token 体系 + Bear/Things 风）
+**决策日期**: 2026-04-27
+**背景**: 用户反馈"当前整个界面看起来都特别小气"。logic-reviewer 调查后定性"小气感"来源 8 项：字号普遍 11–13px、助手气泡无层次、节点阴影 0.03 alpha 近无、顶部工具栏散胶囊、Unicode/Emoji 图标廉价感、间距压缩、无动效、配色冷蓝紫与暖米底相分裂。规划阶段需在以下决策点取舍：
+- 是否引入 Token 体系（tokens.css + theme.ts）
+- 主色：保留冷蓝紫 vs 切焦糖茶（Bear 风）vs 切深天蓝（Things 风）
+- 字号是否上调（base 14→15）
+- 是否引入图标库（lucide-react）
+- 顶部工具栏是否整合为 blur 胶囊
+- 改造颗粒度（分批 review vs 全套一次完成）
+
+**决定**:
+- **Token 体系**：新建 `prototype/src/styles/tokens.css`（CSS 变量）+ `prototype/src/styles/theme.ts`（TS 镜像）作为视觉单一事实源，覆盖颜色 / 字号 / 间距 / 圆角 / 阴影 / 动效 / 字体 / keyframes 八类；组件统一从 token 读取，禁止硬编码视觉值
+- **主色切焦糖茶 #B8783A**（accent-500），副色墨绿 #5C7556（moss-500）；冷蓝紫 #185FA5/#6366f1/#a78bfa 全量替换；暖米奶油底（paper #FBF9F2 / canvas #F1EFE8）+ hsl 偏黄 8% 的暖灰阶（ink-50..900）
+- **字号上调**：base 14→15、节点 header 14→16、大屏标题 16→18；行高统一 1.65–1.75；fontWeight 启用 600/700 以增加层次
+- **lucide-react 替换全部 Unicode/Emoji 图标**（💬→MessageSquare / ✎→Pencil / ⑂→GitBranch / ↳→CornerDownRight / ⛶→Maximize2 / ◆→Sparkle / ✦→Sparkles / ⚙→Settings / ?→HelpCircle 等），size 13–18、strokeWidth 1.6–2.0；Edge 删除按钮的 × 改用两条 SVG line（lucide 不便嵌套进外层 SVG）
+- **顶部工具栏整合**：左 Logo / 中提炼按钮（焦糖渐变） / 右状态条 + 帮助 + 设置 三段式 floating bar，各段半透明 paper(0.72) + backdrop-blur 20px + radius.pill
+- **节点立体感**：默认阴影从 0.03 alpha 升级到 shadow-md（多层柔和暖阴影）；hover/active 升 shadow-lg；提炼节点加 3px 焦糖渐变顶部饰条
+- **气泡层次**：助手气泡从透明改为 surface-soft（暖白）+ 0.5px ink-200 + radius.md；用户气泡 accent-50 + accent-100 边
+- **空状态再设计**：88×88 焦糖渐变图标方块 + Sparkles + 主标题 22px + 副标题 + 主按钮（ink-900 实心）+ 双击提示 五段式
+- **动效层接入**：tokens.css 提供 spin/blink/toast-in/modal-in/overlay-in keyframes + 三种 ease 曲线 + 三档时长；弹窗 overlay-in + modal-in 双层；Toast toast-in 入场；节点 hover/active 200ms 过渡；连线选中色变 200ms；流式光标改 blink 方块
+- **弹窗共享 primitives**：抽离 `prototype/src/canvas/_dialogPrimitives.tsx`（ModalShell / IconButton / CloseButton / DialogButton），HelpDialog / SettingsDialog / RefinePopover / NodeFullscreenModal 全部改用之；App.tsx 抽 `createNodeAt(logicalX, logicalY)` helper 统一双击和空状态主按钮的创建路径
+
+**理由**:
+- 设计 Token 是"全套改造"的地基：未来任何全局视觉调整（换主色、调字号档、改阴影体系）只改 1 处即可——避免散落硬编码导致的视觉规范碎片化
+- 主色焦糖茶（暖橙偏茶）与画布暖米底色相协调，符合用户选择的 "Bear 奶油纸感 + Things 圆润分寸感"；冷蓝紫 + 暖米底是当前最割裂的视觉冲突，必须切除
+- 字号上调而非维持小档：当前用户的"小气感"主诉的核心是字号普遍偏小（11–13px 是 IDE/工具类应用尺度，不适合"思考画布"这种长阅读 + 长编辑场景）；上调到 15/16/18 后长 AI 回复阅读体验显著改善
+- lucide-react 替换 Unicode/Emoji：解决"图标大小不齐 / 基线漂移 / 廉价感"三大问题；30KB gzip 成本可接受
+- backdrop-blur 顶部胶囊：代替统一 toolbar 容器，可让画布在工具栏背后透出营造空间感；blur 是低成本制造层次的现代手法
+- 全套一次完成：用户明确要求"全套"，分批 review 反而打断视觉一致性体验
+- 抽 _dialogPrimitives.tsx：jscpd 在阶段 5 检出 4 处弹窗内部重复（CloseButton / Button / Modal overlay 外壳 / createNode 逻辑），用户选择本轮一并修；同目录抽离成本极低，未来新增弹窗收口
+
+**影响**:
+- 新增 `prototype/src/styles/tokens.css` + `prototype/src/styles/theme.ts`（视觉 token 双形态事实源，单一事实源在 tokens.css）
+- 新增 `prototype/src/canvas/_dialogPrimitives.tsx`（ModalShell / IconButton / CloseButton / DialogButton）
+- 改造 16 个组件文件（App.tsx / canvas/{Node,NodeChatPanel,Edge,Minimap,AgentTrace,RefinedContent,MarkdownContent,SettingsDialog,HelpDialog,NodeFullscreenModal,RefinePopover,ToastContainer}.tsx + styles/global.css）：全部接入 token、全部 Unicode 图标替换为 lucide
+- `domain/rules.md#R013` 大幅重写为"形态级约束 + token 索引指针"形式：具体色值/字号/圆角/阴影/动效一律走 token，不在 R013 内逐一展开（避免 token 升级时 rules.md 变成漂移源）
+- `domain/modules/agent.md` AgentTrace 视觉规格更新（背景从 #F5F4EE 切 rgba 暖米半透明 + accent-200 边 / 字号 11→token.text.xs / 步骤图标改 lucide）
+- `domain/modules/ui-interaction.md` AgentTrace + 启动过渡 + 中断按钮视觉规格同步更新
+- 新增依赖 `lucide-react@^1.11.0`（约 30KB gzip）
+- 后续新增弹窗一律复用 `ModalShell`；新增 icon 按钮一律复用 `IconButton`；新增主/次按钮一律复用 `DialogButton`；新增图标一律 lucide-react；新增可复用样式抽到 `_dialogPrimitives.tsx` 或新建 primitives 文件而非逐组件内联
+
