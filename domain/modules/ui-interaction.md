@@ -60,7 +60,8 @@
 - 子节点视角跳父节点：定位到"被分支的那条消息"开头（让用户看到分支起源的上下文）
 - 父节点视角跳子节点：定位到子节点的"第一条消息"开头；子节点尚无消息时跳过滚动只完成展开+pan（兜底）
 - pan 公式与 minimap 的 centerOn 同源（vx = winW/2 - lx*zoom）以保持视觉一致；节点中心点用 `positionX+180, positionY+120` 近似
-- 滚动锚点用 `data-message-id` DOM 属性 + `scrollIntoView({block:'start', behavior:'smooth'})`；展开是异步重渲染，必须两层 requestAnimationFrame 等待 layout 完成后再滚，单层不够
+- 滚动锚点用 `data-message-id` DOM 属性；定位最近的 `overflow-y:auto/scroll` 祖先（即节点的消息列表容器），手动 `scrollTo` 只滚该容器一个——不能用 `Element.scrollIntoView`（详见 edge-cases E018）
+- 展开是异步重渲染，必须两层 requestAnimationFrame 等待 layout 完成后再滚，单层不够
 - 不处理 fullscreen Modal 场景：Modal 遮罩拦截画布点击，此场景下用户无法触发跳转
 
 ## Agent 轨迹区块（M4 起）

@@ -115,7 +115,38 @@
 **原因**: 用户主权原则——错误必须可见可决策；DevTools console 是开发工具，普通用户不会打开
 **事故记录**: 2026-04-26 与 D021（撤销 token 前置守卫）配套修复
 
+## E016 · `done` 事件之后的 trailing 事件会被前端 IPC 丢弃
+**场景**: 后端 generator 在 yield `done` 之后才 yield 副作用事件（如标题生成的 `title` 事件）
+**处理**:
+- 后端 `_utils.runAssistantStream` / `runAgentAssistantStream` 的 done 分支顺序固定为：`persistFinal → await onComplete() → yield extra → yield done`
+- `done` 必须是流的最后一个事件
+**反例**（修复前的 bug 行为）:
+- 旧顺序 `yield done → await onComplete → yield extra`
+- 前端 `client.ts:runStream` 收到 `done` 立即 `unsubscribe()` 并 `resolve()`
+- 紧随其后的 `title` 事件在 Electron IPC 路径下被彻底丢弃，节点标题不再自动生成
+- 实测 2026-04-26 用户报"加入工具能力后节点标题就一直失效"
+**原因**: IPC 监听器一旦 unsubscribe 就不再接收任何事件；后端 generator 是"推"语义，前端 once-on-done 是"拉"语义，二者只能通过事件顺序保证不冲突
+
+## E017 · agent 单轮 LLM 流式事件不得攒批
+**场景**: agent loop 单轮内消费 LLM SSE 流时，把所有 reasoning/content delta 收集到数组，整轮跑完才回到 runAgentLoop 一次性 yield
+**处理**:
+- `runOneLLMRoundStream` 必须是 async generator，每个 LLM delta 即时 `yield`
+- `OneRoundResult` 不持有事件队列，仅承载流结束后回灌 messages 所需的 toolCalls/messageId/buf
+**反例**（修复前的 bug 行为）:
+- 旧实现 `consumeLLMRoundStream` 把 reasoning/content 事件 push 到 `OneRoundResult.passthroughEvents` 数组
+- `runAgentLoop` 在 `await runOneLLMRound(...)` 返回后才 `for-of round.passthroughEvents yield evt`
+- 前端表现：长时间无任何流式回包 → 末尾突然全部出现 → done，与"无流式"完全等价
+- 思考模式（reasoning chunk 数倍于普通 content）下感知最强烈
+- 实测 2026-04-26 用户报"思考模式流式响应卡顿，AI 回复时长时间不动突然大面积出现"
+**原因**: async generator 的延迟语义——`await consumeAll(...)` 模式让所有事件在调用方 await 处被一次性收集，破坏了"推"流的实时性
+
 ## E007 · 三种选择状态切换时必须互清
 **场景**: 用户在已有 active node 时点击边，或在选中边时 Shift+点节点
 **处理**: 任一选择动作（setActiveNode / toggleSelectNode / setSelectedEdge）都在 store 内主动清空另两种状态
 **原因**: Delete 键根据"当前激活的选择类型"决定删除目标，若同时存在 active node 和 selected edge，行为定义不明确（按优先级解决会让用户困惑）
+
+## E018 · 画布 transform 层内不能用 Element.scrollIntoView
+**场景**: 分支跳转时把目标消息滚到视口——目标消息在节点内的 `overflow:auto` 容器里，节点又是 `position:absolute` 嵌在画布的 `transform: translate+scale` 层下
+**处理**: 改为手动定位最近的 `overflow-y:auto/scroll` 祖先（节点的消息列表容器），用 `getBoundingClientRect` 计算相对偏移后调 `container.scrollTo({top, behavior:'smooth'})` 只滚它一个；遍历时校验 `scrollHeight > clientHeight` 避免误判未溢出的容器
+**原因**: `Element.scrollIntoView` 会让**所有**可滚动祖先链都滚动以使元素可见——包括 body / 画布根容器。在 transform 层内，浏览器按渲染后的实际位置计算可见性，会把 body 一起滚走，表现为"父节点顶部被裁切 + 画布下方出现空白裂缝 + minimap 视口框漂移"
+**事故记录**: 2026-04-27 实施分支一键跳转时第一版用 `scrollIntoView({block:'start'})`，用户截图反馈跳转后画布严重错位；当天定位根因并切换为手动滚最近 overflow:auto 祖先方案

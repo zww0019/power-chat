@@ -140,13 +140,18 @@ function findStreamingNodeId(store: ReturnType<typeof useCanvasStore.getState>):
  * 跨节点跳转并定位到某条消息——分支双向标注的"一键回到来源"行为。
  *
  * 完整动作：(1) 若节点折叠则展开（store + 后端持久化）；(2) 设为活跃节点；
- * (3) pan 画布让节点中心进入视口中央；(4) 等两帧后用 data-message-id 锚点滚动到该消息。
+ * (3) pan 画布让节点中心进入视口中央；(4) 等两帧后手动滚动节点内消息容器到该消息。
  *
  * 两帧延迟的原因：折叠→展开会触发 React 重新挂载 ExpandedNodeView，
  * 第一帧只完成 commit 还没 layout，DOM 选择器拿到的是新挂载但尚未布局的元素，
- * scrollIntoView 计算出错位的偏移。两层 rAF 确保 layout 完成后再滚动。
+ * 滚动计算会拿到错位的偏移。两层 rAF 确保 layout 完成后再滚动。
  *
- * messageId 传 null 时跳过滚动（用于子节点无消息的早期场景）；找不到 DOM 锚点时静默 return。
+ * 不用 Element.scrollIntoView：节点是 position:absolute 嵌在画布 transform 层里，
+ * scrollIntoView 会让所有可滚动祖先（含 body / 画布根）都滚动以使元素可见，
+ * 导致 body 被滚走、画布出现空白裂缝、minimap 视口框漂移。
+ * 改为定位最近的 overflow:auto 祖先（节点的消息列表容器）只滚它一个。
+ *
+ * messageId 传 null 时跳过滚动（用于子节点无消息的早期场景）；找不到 DOM 锚点或可滚动祖先时静默 return。
  */
 export function focusNodeOnMessage(targetNodeId: string, messageId: string | null): void {
   const store = useCanvasStore.getState();
@@ -170,10 +175,34 @@ export function focusNodeOnMessage(targetNodeId: string, messageId: string | nul
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const el = document.querySelector(`[data-message-id="${messageId}"]`);
-        if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        if (!el) return;
+        const scrollContainer = findScrollableAncestor(el as HTMLElement);
+        if (!scrollContainer) return;
+        const elRect = el.getBoundingClientRect();
+        const containerRect = scrollContainer.getBoundingClientRect();
+        scrollContainer.scrollTo({
+          top: scrollContainer.scrollTop + elRect.top - containerRect.top,
+          behavior: 'smooth',
+        });
       });
     });
   }
+}
+
+// 找最近的可纵向滚动祖先（节点内消息容器是 overflowY:auto + maxHeight 480）。
+// 不直接用 element.parentElement——节点 DOM 嵌套较深（bubble div → 消息列表 → 节点外框），
+// 中间层未必是滚动容器；按 computedStyle 找最稳。同时校验 scrollHeight > clientHeight，
+// 避免误把"声明 overflow:auto 但内容未溢出"的容器当作滚动祖先。
+function findScrollableAncestor(start: HTMLElement): HTMLElement | null {
+  let cur: HTMLElement | null = start.parentElement;
+  while (cur) {
+    const overflowY = window.getComputedStyle(cur).overflowY;
+    if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight) {
+      return cur;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 /** 从节点的某条 AI 消息分支出新对话节点。 */
