@@ -11,30 +11,77 @@ import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, pe
 // fullscreen：大屏 Modal（高度 flex 占满 Modal 内容区，宽度由 Modal 容器决定）。
 type ChatMode = 'inline' | 'fullscreen';
 
-// 操作按钮共用的胶囊形状：编辑/复制/分支/分支徽章/编辑器提交&取消统一引用。
-// 调整视觉规范（圆角/字号/padding）改 1 处即可。颜色相关属性由各按钮按变体覆盖。
+// UserBubbleEditor 取消/提交按钮的胶囊形状（仅这两个按钮还需要胶囊视觉，
+// 因为它们出现在编辑模式下需要明确"主/次按钮"对比，与气泡尾部的工具栏语义不同）。
 const pillBase: React.CSSProperties = {
   fontSize: 11,
   padding: '3px 10px',
   borderRadius: 12,
 };
 
-// 紫边白底主色胶囊：编辑/复制/分支三个 hover 触发的操作按钮共用。
-// 支持 disabled 变体（编辑按钮在被分支引用 / 流式中时灰显）。
-function pillPrimary(disabled = false): React.CSSProperties {
-  return {
-    ...pillBase,
-    color: disabled ? '#cbd5e1' : '#6366f1',
-    background: '#ffffff',
-    border: `1px solid ${disabled ? '#e2e8f0' : '#c7d2fe'}`,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    boxShadow: disabled ? 'none' : '0 1px 4px rgba(0,0,0,0.08)',
-  };
+// 消息工具栏容器：贴在气泡的左下（assistant）或右下（user）外缘，hover 才显示。
+// 自身无背景/边框，只负责按钮的横向排列与定位；onPointerDown 阻止冒泡，
+// 防止画布的拖拽逻辑把工具栏点击当成节点拖动。
+function MessageToolbar({ side, children }: { side: 'left' | 'right'; children: React.ReactNode }) {
+  return (
+    <div
+      style={{ position: 'absolute', [side]: 0, bottom: -8, display: 'flex', gap: 6 }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>
+  );
 }
 
-// pillPrimary() 默认态（disabled=false）的固定结果，提取为常量避免 BranchButton /
-// CopyButton 每次渲染重新调用函数、产生新对象引用，减少无用 style 对象分配。
-const pillPrimaryDefault = pillPrimary();
+interface ToolbarIconButtonProps {
+  onClick: (e: React.MouseEvent) => void;
+  title: string;
+  disabled?: boolean;
+  // "持续强调态"：区别于 HTML :active 按下瞬态，这里是受控的常驻高亮
+  // （用于 BranchBadge popover 打开期间按钮保持主色，提示当前浮层归属）
+  highlighted?: boolean;
+  fontWeight?: 400 | 500;
+  children: React.ReactNode;
+}
+
+// 静态样式部分（不依赖 props）提取为模块级常量，避免每次渲染新建对象
+const toolbarButtonBaseStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  fontSize: 13,
+  padding: '2px 4px',
+  lineHeight: 1,
+  transition: 'color 120ms ease',
+};
+
+// 工具栏内的图标按钮：透明背景，无边框/阴影，仅靠颜色变化提示交互。
+// 默认 #94a3b8（与节点 placeholder 同色），hover/highlighted 变 #6366f1（主色紫），disabled 变 #cbd5e1。
+function ToolbarIconButton({ onClick, title, disabled, highlighted, fontWeight = 400, children }: ToolbarIconButtonProps) {
+  const [hovered, setHovered] = useState(false);
+  const color = disabled ? '#cbd5e1' : (hovered || highlighted ? '#6366f1' : '#94a3b8');
+  return (
+    <button
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        if (disabled) return;
+        e.stopPropagation();
+        onClick(e);
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={title}
+      disabled={disabled}
+      style={{
+        ...toolbarButtonBaseStyle,
+        color,
+        fontWeight,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
 interface NodeChatPanelProps {
   node: NodeType;
@@ -223,11 +270,12 @@ function MessageBubble({ message, onBranch, mode }: BubbleProps) {
   );
 }
 
-// 用户气泡：纯文本展示 + hover 显示 ✎ 编辑按钮 + 内联编辑模式。
+// 用户气泡：纯文本展示 + hover 显示工具栏（编辑按钮）+ 内联编辑模式。
 // 编辑提交走 performEditMessage（截断 + 重发）；按钮在节点流式中或消息被分支引用时禁用。
 function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSize: number; maxWidth: string }) {
   const [hover, setHover] = useState(false);
-  const [showEditBtn, setShowEditBtn] = useState(false);
+  // hover 触发后需等 80ms 延迟计时器到期才翻 true，以过滤快速划过的误触（与 AssistantBubble 同款）
+  const [showToolbar, setShowToolbar] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
   // 两次独立订阅而非合并：让两个条件各自精确追踪所需切片，
@@ -235,13 +283,13 @@ function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSiz
   const isReferenced = useCanvasStore((s) => selectIsMessageReferencedByBranch(s, message.nodeId, message.sequence));
   const isNodeStreaming = useCanvasStore((s) => s.streamingByNode[message.nodeId] === 'streaming');
 
-  // 80ms hover 延迟避免快速划过时按钮闪烁（与 AssistantBubble 的分支按钮同款手感）
+  // 80ms hover 延迟避免快速划过时按钮闪烁（视觉规范文档"微交互手感"建议）
   useEffect(() => {
     if (!hover) {
-      setShowEditBtn(false);
+      setShowToolbar(false);
       return;
     }
-    const t = setTimeout(() => setShowEditBtn(true), 80);
+    const t = setTimeout(() => setShowToolbar(true), 80);
     return () => clearTimeout(t);
   }, [hover]);
 
@@ -303,30 +351,19 @@ function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSiz
         >
           {message.content}
         </div>
-        {showEditBtn && (
-          <EditButton onEdit={startEdit} disabled={editDisabled} disabledTooltip={disabledTooltip} />
+        {showToolbar && (
+          <MessageToolbar side="right">
+            <ToolbarIconButton
+              onClick={startEdit}
+              disabled={editDisabled}
+              title={editDisabled ? disabledTooltip : '编辑此消息并重新生成 AI 回复'}
+            >
+              ✎
+            </ToolbarIconButton>
+          </MessageToolbar>
         )}
       </div>
     </div>
-  );
-}
-
-// ✎ 编辑按钮：与 AssistantBubble 的分支按钮镜像（左下 vs 右下），保持气泡尾部干净
-function EditButton({ onEdit, disabled, disabledTooltip }: { onEdit: () => void; disabled: boolean; disabledTooltip: string }) {
-  return (
-    <button
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        if (disabled) return;
-        e.stopPropagation();
-        onEdit();
-      }}
-      title={disabled ? disabledTooltip : '编辑此消息并重新生成 AI 回复'}
-      disabled={disabled}
-      style={{ position: 'absolute', left: 0, bottom: -8, ...pillPrimary(disabled) }}
-    >
-      ✎ 编辑
-    </button>
   );
 }
 
@@ -412,12 +449,15 @@ interface AssistantBubbleProps {
   maxWidth: string;
 }
 
-// 助手气泡：含 AgentTrace / Reasoning / 启动提示 / 流式光标 / 分支按钮 / 复制按钮。
-// hover 状态本身只影响"分支按钮 / 复制按钮显隐"，封装在此组件内部，避免污染 UserBubble。
+// 助手气泡：含 AgentTrace / Reasoning / 启动提示 / 流式光标 / 工具栏（复制 / 分支 / 分支徽章）。
+// 工具栏左下浮出，hover 80ms 触发显示；BranchBadge popover 打开时强制保持工具栏可见，
+// 避免用户鼠标移到浮层上时工具栏消失带飞 popover。
 function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBubbleProps) {
   const [hover, setHover] = useState(false);
   // hover 触发后需等 80ms 延迟计时器到期才翻 true，以过滤快速划过的误触
   const [hoverDelayElapsed, setHoverDelayElapsed] = useState(false);
+  // 分支徽章 popover 状态提升到这里：popover 打开时即使 hover 离开气泡，工具栏也要保持显示
+  const [popoverOpen, setPopoverOpen] = useState(false);
   const hasBranches = useCanvasStore(
     (s) => selectBranchesFromMessage(s, message.nodeId, message.sequence).length > 0,
   );
@@ -438,8 +478,27 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
   // 启动过渡（文档 §4.5）：streaming 已开始但 content/reasoning/trace 全空的瞬间
   // 显示"AI 正在准备工具调用…"，让用户对按下 Enter 后的等待有明确反馈
   const showStartupHint = isStreaming && !hasAgentTrace && !hasReasoning && !message.content;
-  // 消息完成 + 延迟到期 双重守卫：streaming 中途不应显示复制/分支按钮
-  const showHoverControls = message.status === 'complete' && hoverDelayElapsed;
+  // 工具栏显示条件：消息完成 && (hover 延迟到期 || popover 打开)；popoverOpen 兜底确保
+  // 用户点开分支徽章浮层后即使鼠标离开气泡，工具栏与浮层都保持可见，直到用户点击外部关闭
+  const showToolbar = message.status === 'complete' && (hoverDelayElapsed || popoverOpen);
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(message.content);
+      } else {
+        copyViaExecCommand(message.content);
+      }
+      toast.success('已复制');
+    } catch {
+      try {
+        copyViaExecCommand(message.content);
+        toast.success('已复制');
+      } catch {
+        toast.error('复制失败');
+      }
+    }
+  };
 
   return (
     <div
@@ -477,48 +536,25 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
         <MarkdownContent content={message.content} isStreaming={isStreaming} />
         {isStreaming && <span style={{ color: '#6366f1', marginLeft: 2 }}>▍</span>}
       </div>
-      {message.status === 'complete' && (
-        <BranchBadge nodeId={message.nodeId} sequence={message.sequence} />
+      {showToolbar && (
+        <MessageToolbar side="left">
+          <ToolbarIconButton onClick={handleCopy} title="复制此消息原文（保留 markdown）">
+            📋
+          </ToolbarIconButton>
+          <ToolbarIconButton onClick={onBranch} title="从这里分支（基于此消息创建子节点）">
+            ↳
+          </ToolbarIconButton>
+          {hasBranches && (
+            <BranchBadgeButton
+              nodeId={message.nodeId}
+              sequence={message.sequence}
+              open={popoverOpen}
+              onOpenChange={setPopoverOpen}
+            />
+          )}
+        </MessageToolbar>
       )}
-      {/* 复制按钮：与 UserBubble 编辑按钮位置对称（左下）。当该消息已派生分支（BranchBadge 占据
-          left:0）时往右让位，避免 hover 时遮挡常驻的分支徽章。 */}
-      {showHoverControls && <CopyButton content={message.content} hasBranchBadge={hasBranches} />}
-      {showHoverControls && <BranchButton onBranch={onBranch} />}
     </div>
-  );
-}
-
-// 📋 复制按钮：与 EditButton 镜像同款胶囊；点击调原生剪贴板 API（保留 markdown 原文），
-// 失败回退到 execCommand 兜底，避免 Electron 非安全上下文（如 file:// 协议）下的可用性差异。
-// hasBranchBadge=true 时 left 右移 56px，为常驻的 BranchBadge 腾出空间。
-function CopyButton({ content, hasBranchBadge }: { content: string; hasBranchBadge: boolean }) {
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content);
-      } else {
-        copyViaExecCommand(content);
-      }
-      toast.success('已复制');
-    } catch {
-      try {
-        copyViaExecCommand(content);
-        toast.success('已复制');
-      } catch {
-        toast.error('复制失败');
-      }
-    }
-  };
-  return (
-    <button
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={handleCopy}
-      title="复制此消息原文（保留 markdown）"
-      style={{ position: 'absolute', left: hasBranchBadge ? 56 : 0, bottom: -8, ...pillPrimaryDefault }}
-    >
-      📋 复制
-    </button>
   );
 }
 
@@ -537,51 +573,44 @@ function copyViaExecCommand(text: string) {
   if (!ok) throw new Error('execCommand copy failed');
 }
 
-// 父节点视角的"已派生 N 个分支"徽章。常驻显示（不依赖 hover），
-// 点击展开浮层列出所有子分支节点，点击条目切换活跃节点到该子节点。
-// 浮层用 popover 而非 tooltip，是因为同消息可能派生多条，需要让用户在多个目标间挑选。
-function BranchBadge({ nodeId, sequence }: { nodeId: string; sequence: number }) {
+// 工具栏内的"已派生 N 个分支"按钮：图标态（⑂N），点击展开浮层列出所有子分支。
+// open 状态由父 AssistantBubble 受控，让父组件能在 popover 打开时延长工具栏的可见时间。
+interface BranchBadgeButtonProps {
+  nodeId: string;
+  sequence: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+function BranchBadgeButton({ nodeId, sequence, open, onOpenChange }: BranchBadgeButtonProps) {
   const branches = useCanvasStore((s) => selectBranchesFromMessage(s, nodeId, sequence));
-  const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // 浮层打开时监听全局 pointerdown，点击容器外即关闭——避免遮挡画布操作
+  // 浮层打开时监听全局 pointerdown，点击容器外即关闭；onOpenChange 同步翻转，
+  // 让父组件能据此释放工具栏 popoverOpen 状态
   useEffect(() => {
     if (!open) return;
     const handler = (e: PointerEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        onOpenChange(false);
       }
     };
     document.addEventListener('pointerdown', handler);
     return () => document.removeEventListener('pointerdown', handler);
-  }, [open]);
+  }, [open, onOpenChange]);
 
   if (branches.length === 0) return null;
 
   return (
-    <div
-      ref={containerRef}
-      style={{ position: 'absolute', left: 0, bottom: -8 }}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((v) => !v);
-        }}
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <ToolbarIconButton
+        onClick={() => onOpenChange(!open)}
         title={`已派生 ${branches.length} 个分支`}
-        style={{
-          ...pillBase,
-          color: '#6366f1',
-          background: '#EEF2FF',
-          border: '1px solid #c7d2fe',
-          cursor: 'pointer',
-          fontWeight: 500,
-        }}
+        highlighted={open}
+        fontWeight={500}
       >
         ⑂ {branches.length}
-      </button>
+      </ToolbarIconButton>
       {open && (
         <div
           style={{
@@ -608,13 +637,13 @@ function BranchBadge({ nodeId, sequence }: { nodeId: string; sequence: number })
                 e.stopPropagation();
                 // 跳子节点定位到它的"分支起点"——sequence=0 的第一条消息（通常是 user 首问）；
                 // 子节点尚无消息时传 null，focusNodeOnMessage 跳过滚动只展开 + pan。
-                // 通过 getState() 按需读取避免订阅整个 messages 字典导致任意消息更新都重渲 BranchBadge
+                // 通过 getState() 按需读取避免订阅整个 messages 字典导致任意消息更新都重渲徽章
                 const allMessages = useCanvasStore.getState().messages;
                 const firstMsg = Object.values(allMessages)
                   .filter((m) => m.nodeId === childNode.id)
                   .sort((a, b) => a.sequence - b.sequence)[0];
                 focusNodeOnMessage(childNode.id, firstMsg?.id ?? null);
-                setOpen(false);
+                onOpenChange(false);
               }}
               style={{
                 display: 'block',
@@ -648,21 +677,6 @@ function StartupHint() {
     <div style={{ fontSize: 11, color: '#cbd5e1', fontStyle: 'italic', marginBottom: 4 }}>
       AI 正在准备工具调用…
     </div>
-  );
-}
-
-function BranchButton({ onBranch }: { onBranch: () => void }) {
-  return (
-    <button
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        onBranch();
-      }}
-      style={{ position: 'absolute', right: 0, bottom: -8, ...pillPrimaryDefault }}
-    >
-      ↳ 从这里分支
-    </button>
   );
 }
 

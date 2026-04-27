@@ -53,12 +53,14 @@
 - 仅支持编辑 user 消息，不支持 assistant 消息编辑/重生成（v1 范围限定，避免重生成时 agentTrace/reasoningContent 等字段的语义复杂度）
 
 ## AI 消息复制（仅前端能力）
-- assistant 气泡 hover 80ms 后左下出现"📋 复制"按钮，与 user 气泡左下"✎ 编辑"按钮位置对称
+- assistant 气泡 hover 80ms 后左下浮出 `MessageToolbar`，工具栏内含 `📋`（复制）/ `↳`（从这里分支）/ `⑂N`（已派生分支时显示，点击展开浮层）三项 icon 按钮
+- user 气泡同样 hover 80ms，右下浮出工具栏，仅含 `✎`（编辑）一项
+- 工具栏与按钮的视觉规格统一遵循 R013（透明背景、纯 icon、无胶囊感）
 - 复制内容只取 `Message.content`（保留原始 markdown 符号，不剥离），**不包含** `reasoningContent` / `agentTrace`（语义独立字段，沿用 R019 协议无关原则的边界）
-- 不受 R021 守卫约束（复制不修改任何数据，与"截断/编辑"语义无关）
+- 复制不受 R021 守卫约束（不修改任何数据，与"截断/编辑"语义无关）
 - 不给 user 消息提供复制按钮（v1 范围限定）
 - 实现走 `navigator.clipboard.writeText` 主路径，失败时回退 `document.execCommand('copy')` 兜底（覆盖 Electron file:// 非安全上下文场景）；成功 `toast.success('已复制')`、失败 `toast.error('复制失败')`
-- 当该消息已派生分支（左下被 BranchBadge 占据）时，复制按钮 `left:0 → 56` 让位避让
+- BranchBadge 浮层 open 时，工具栏强制保持可见（`popoverOpen` 状态由 AssistantBubble 管理）—— 避免鼠标移到浮层上时工具栏带飞 popover
 
 ## 与其他模块的关系
 - 上游：调 settings 取 llmModel/llmFastModel/thinkingModeEnabled

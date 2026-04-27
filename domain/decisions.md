@@ -494,4 +494,39 @@
 - `prototype/src/canvas/NodeChatPanel.tsx` 新增 `pillBase` / `pillPrimary` / `CopyButton` / `copyViaExecCommand`；EditButton/BranchButton/BranchBadge/UserBubbleEditor 全部改用胶囊常量
 - 新增 `prototype/src/canvas/useTitleRegeneration.ts` hook
 - 后续新增"消息上的 hover 操作按钮"应直接复用 `pillPrimary()`；新增标题刷新入口直接调 `useTitleRegeneration(nodeId)`；不再单独写 loading 守卫
+- **2026-04-27 后续修订（见 D027）**：`pillPrimary` 已被工具栏改造删除；本影响项中"复用 `pillPrimary()`"已失效，新增消息操作按钮请改用 `MessageToolbar` + `ToolbarIconButton`
+
+## D027 · 消息悬浮工具栏改造（替换 D026 中的胶囊按钮设定）
+**决策日期**: 2026-04-27
+**背景**: D026 落地后用户反馈"悬浮胶囊"视觉过重，希望改造为"悬浮工具栏"——更轻量、聚合感更强。规划阶段需在以下选项间取舍：
+- 聚合形态：横向 icon 工具栏 / 多按钮各自圆点 / 单按钮 ⋯ 下拉菜单
+- 出现位置：气泡内右上角 / 气泡上方 / 气泡下方
+- 适用气泡：user + assistant 都改 / 仅 assistant 改
+- 显示形式：仅图标 / 图标+文字 / 图标+tooltip
+- BranchBadge 处理：保持常驻 / 移到右下让位 / 并入工具栏作为一项
+- 是否保留胶囊感
+
+**决定**:
+- **位置**：user 工具栏在气泡**右下** `right:0,bottom:-8`，assistant 工具栏在气泡**左下** `left:0,bottom:-8`（与 D026 中 user 编辑按钮的左下位置不同，**反转方向**）
+- **样式**：去胶囊感，纯 icon + 透明背景 + 无边框/阴影；按钮颜色默认 `#94a3b8` / hover 或 highlighted `#6366f1` / disabled `#cbd5e1`；按钮字号 13、`padding:'2px 4px'`；容器 `display:flex / gap:6`
+- **按钮项**：user = `✎`（编辑）；assistant = `📋`（复制）+ `↳`（分支）+ `⑂N`（已派生分支时追加，点击展开浮层）；不新增功能项
+- **BranchBadge 改造**：从常驻徽章改为工具栏内的 hover 触发项；popover 状态由父 AssistantBubble 受控（`popoverOpen` state）；popover 打开期间工具栏强制保持可见 + 该按钮持续 `highlighted` 主色
+- **触发**：沿用 hover 80ms 防抖
+- **抽象**：在 NodeChatPanel.tsx 内引入 `MessageToolbar`（容器） + `ToolbarIconButton`（图标按钮），统一所有消息操作按钮的样式与交互
+- **删除**：`pillPrimary()` / `pillPrimaryDefault` / 独立 `EditButton` / `CopyButton` / `BranchButton` 组件 / `hasBranchBadge` 让位逻辑
+- **保留**：`pillBase`（UserBubbleEditor 取消/提交按钮还需要"主/次按钮"对比，胶囊视觉合理）
+
+**理由**:
+- 去胶囊感后视觉负担降低，且消息列表越长，按钮越多时，扁平 icon 比胶囊更不抢戏
+- user 右下 / assistant 左下 = 各自气泡"远离消息列表外缘"的内侧角；与 D026 的"对称位置"相比，反转方向更符合"工具栏聚合在气泡内侧"的视觉规律
+- BranchBadge 并入工具栏 = 信息密度从"扫一眼可见"降为"hover 才知道"——用户已明确选择此代价（决策点 R）
+- popover 打开时工具栏强制可见：避免鼠标穿过工具栏与浮层之间的间隙时工具栏 hover 失效带飞 popover；属于"延长可见时间"而非"改变交互语义"
+- ToolbarIconButton 内部 hover state 自治：透明 icon 必须靠颜色变化提示交互，把 hover state 放在按钮自身比放在父级集中管理更内聚
+- 保留 pillBase 给 UserBubbleEditor：编辑模式是模态化的"操作面板"语境，主/次按钮的胶囊形对比保留更明确——不与气泡尾部工具栏的"轻量浮层"语境混淆
+
+**影响**:
+- `domain/rules.md#R013` 替换原"消息操作胶囊按钮统一规格"为"消息操作工具栏统一规格"；新增"编辑模式按钮保留胶囊形"补充条目；来源行追加 D027
+- `domain/modules/conversation.md` "AI 消息复制（仅前端能力）"小节重写：增加工具栏形态、按钮项清单、popoverOpen 兜底说明；删除"BranchBadge 让位避让"过期描述
+- `prototype/src/canvas/NodeChatPanel.tsx` 删除 `pillPrimary` / `EditButton` / `CopyButton` / `BranchButton` / 旧 `BranchBadge`；新增 `MessageToolbar` / `ToolbarIconButton` / `BranchBadgeButton`；handleCopy 内联进 AssistantBubble；引入 `popoverOpen` 状态
+- 后续新增"消息上的 hover 操作按钮"应使用 `MessageToolbar` + `ToolbarIconButton`，而非已删除的 `pillPrimary`；按钮颜色须遵守 R013 中工具栏 token
 

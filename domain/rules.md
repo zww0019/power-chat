@@ -92,9 +92,10 @@
 - 帮助弹窗（HelpDialog）：480px × 自适应（max-height 80vh, 内容溢出滚动）；遮罩 `rgba(15,23,42,0.45)`；圆角 8px、边框 `0.5px solid #E5E3DA`；ESC / 点遮罩 / × 三路关闭
 - Modal / 浮层 zIndex 层级表（高在前层）：SettingsDialog 1000 → HelpDialog 300 → NodeFullscreenModal 200 → toolbar 100 → minimap 90；新增 Modal 应落入此区间，避免与 settings 同层引发拦截
 - toolbar 按钮统一规格：背景 `#FFFFFF` / 边框 `1px solid #e2e8f0` / `padding:'6px 10px'` / `borderRadius:6` / 字号 13 / 颜色 `#475569` / `boxShadow:'0 1px 4px rgba(0,0,0,0.04)'`；toolbar 容器 `pointerEvents:none`、按钮各自 `pointerEvents:auto`
-- 消息操作胶囊按钮统一规格：字号 11 / `padding:'3px 10px'` / `borderRadius:12`，由 NodeChatPanel 内 `pillBase` + `pillPrimary(disabled?)` 常量提供；hover 80ms 触发显示（编辑/复制/分支按钮）；视觉变体仅在 color/border/background 上分化
-- 来源：视觉规范文档 §一/二/三 + 2026-04-26 fullscreen/minimap 增量 + 2026-04-26 自适应锚点修复（D024）+ 2026-04-26 帮助弹窗（D025）+ 2026-04-27 字号松绑与胶囊样式抽取（D026）
-- 最后确认：2026-04-27
+- 消息操作工具栏统一规格：纯 icon 按钮组、透明背景、无边框/阴影；按钮字号 13 / `padding:'2px 4px'`；颜色默认 `#94a3b8` / hover 或 highlighted `#6366f1` / disabled `#cbd5e1`；容器 `display:flex / gap:6 / position:absolute`，user 消息 `right:0,bottom:-8`、assistant 消息 `left:0,bottom:-8`；hover 80ms 触发显示；按钮项 user=`✎`，assistant=`📋 ↳`，已派生分支时追加 `⑂N`（点击展开浮层；浮层 open 时工具栏强制保持可见 + 按钮 highlighted）；由 NodeChatPanel 内 `MessageToolbar` + `ToolbarIconButton` 组件提供
+- 编辑模式按钮（UserBubbleEditor 取消/提交）保留胶囊形：字号 11 / `padding:'3px 10px'` / `borderRadius:12`，由 `pillBase` 常量提供——这两处需要"主/次按钮"对比，与气泡尾部工具栏语义不同
+- 来源：视觉规范文档 §一/二/三 + 2026-04-26 fullscreen/minimap 增量 + 2026-04-26 自适应锚点修复（D024）+ 2026-04-26 帮助弹窗（D025）+ 2026-04-27 字号松绑（D026）+ 2026-04-27 工具栏改造（D027）
+- 最后确认:2026-04-27
 
 ## R014 · Agent 启动权属用户（原则 C）
 - agent 的合法触发是用户用动作动词（"搜""查""找""读""帮我搜"等）明确表达的工具使用意图
