@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage, selectIsMessageReferencedByBranch } from '../store/canvasStore';
+import { toast } from '../store/toastStore';
 import type { Node as NodeType, Message } from '../types';
 import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
@@ -9,6 +10,31 @@ import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, pe
 // inline：节点展开态内嵌（高度上限 480px，宽度跟随 360px 节点）；
 // fullscreen：大屏 Modal（高度 flex 占满 Modal 内容区，宽度由 Modal 容器决定）。
 type ChatMode = 'inline' | 'fullscreen';
+
+// 操作按钮共用的胶囊形状：编辑/复制/分支/分支徽章/编辑器提交&取消统一引用。
+// 调整视觉规范（圆角/字号/padding）改 1 处即可。颜色相关属性由各按钮按变体覆盖。
+const pillBase: React.CSSProperties = {
+  fontSize: 11,
+  padding: '3px 10px',
+  borderRadius: 12,
+};
+
+// 紫边白底主色胶囊：编辑/复制/分支三个 hover 触发的操作按钮共用。
+// 支持 disabled 变体（编辑按钮在被分支引用 / 流式中时灰显）。
+function pillPrimary(disabled = false): React.CSSProperties {
+  return {
+    ...pillBase,
+    color: disabled ? '#cbd5e1' : '#6366f1',
+    background: '#ffffff',
+    border: `1px solid ${disabled ? '#e2e8f0' : '#c7d2fe'}`,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    boxShadow: disabled ? 'none' : '0 1px 4px rgba(0,0,0,0.08)',
+  };
+}
+
+// pillPrimary() 默认态（disabled=false）的固定结果，提取为常量避免 BranchButton /
+// CopyButton 每次渲染重新调用函数、产生新对象引用，减少无用 style 对象分配。
+const pillPrimaryDefault = pillPrimary();
 
 interface NodeChatPanelProps {
   node: NodeType;
@@ -137,8 +163,8 @@ function NodeFooter({ isRefined, isStreaming, draft, setDraft, handleKeyDown, on
   const bg = isRefined ? '#FAEEDA' : '#FCFCFA';
   const textColor = isRefined ? '#412402' : '#1e293b';
   const placeholder = isStreaming ? 'AI 正在回复…' : '继续这个对话…';
-  const padding = mode === 'fullscreen' ? '12px 24px' : '8px 12px';
-  const fontSize = mode === 'fullscreen' ? 14 : 13;
+  const padding = mode === 'fullscreen' ? '12px 24px' : '10px 14px';
+  const fontSize = 14;
   const rows = mode === 'fullscreen' ? 3 : 2;
 
   return (
@@ -182,7 +208,7 @@ interface BubbleProps {
 // 拆分原因：原 MessageBubble 单函数承载 7 类条件渲染（启动提示/AgentTrace/Reasoning/
 // 用户气泡/助手气泡/流式光标/分支按钮）+ mode 参数三元，CCN 23 超阈值（>15）。
 function MessageBubble({ message, onBranch, mode }: BubbleProps) {
-  const fontSize = mode === 'fullscreen' ? 14 : 13;
+  const fontSize = 14;
   const maxWidth = mode === 'fullscreen' ? '78%' : '94%';
   if (message.role === 'user') {
     return <UserBubble message={message} fontSize={fontSize} maxWidth={maxWidth} />;
@@ -268,10 +294,10 @@ function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSiz
           style={{
             background: '#eef2ff',
             color: '#1e293b',
-            padding: '6px 10px',
+            padding: '8px 12px',
             borderRadius: 6,
             fontSize,
-            lineHeight: 1.6,
+            lineHeight: 1.65,
             whiteSpace: 'pre-wrap',
           }}
         >
@@ -297,19 +323,7 @@ function EditButton({ onEdit, disabled, disabledTooltip }: { onEdit: () => void;
       }}
       title={disabled ? disabledTooltip : '编辑此消息并重新生成 AI 回复'}
       disabled={disabled}
-      style={{
-        position: 'absolute',
-        left: 0,
-        bottom: -8,
-        fontSize: 11,
-        color: disabled ? '#cbd5e1' : '#6366f1',
-        background: '#ffffff',
-        border: `1px solid ${disabled ? '#e2e8f0' : '#c7d2fe'}`,
-        padding: '2px 8px',
-        borderRadius: 12,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        boxShadow: disabled ? 'none' : '0 1px 4px rgba(0,0,0,0.08)',
-      }}
+      style={{ position: 'absolute', left: 0, bottom: -8, ...pillPrimary(disabled) }}
     >
       ✎ 编辑
     </button>
@@ -359,12 +373,12 @@ function UserBubbleEditor({ messageId, draft, setDraft, onSubmit, onCancel, font
             width: '100%',
             background: '#eef2ff',
             color: '#1e293b',
-            padding: '6px 10px',
+            padding: '8px 12px',
             border: '1px solid #c7d2fe',
             borderRadius: 6,
             fontSize,
             fontFamily: 'inherit',
-            lineHeight: 1.6,
+            lineHeight: 1.65,
             resize: 'vertical',
             outline: 'none',
             boxSizing: 'border-box',
@@ -374,14 +388,14 @@ function UserBubbleEditor({ messageId, draft, setDraft, onSubmit, onCancel, font
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onCancel(); }}
-            style={{ padding: '2px 8px', borderRadius: 12, border: '1px solid #e2e8f0', background: '#ffffff', color: '#64748b', cursor: 'pointer' }}
+            style={{ ...pillBase, border: '1px solid #e2e8f0', background: '#ffffff', color: '#64748b', cursor: 'pointer' }}
           >
             取消
           </button>
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onSubmit(); }}
-            style={{ padding: '2px 8px', borderRadius: 12, border: '1px solid #6366f1', background: '#6366f1', color: '#ffffff', cursor: 'pointer' }}
+            style={{ ...pillBase, border: '1px solid #6366f1', background: '#6366f1', color: '#ffffff', cursor: 'pointer' }}
           >
             提交并重新生成
           </button>
@@ -398,19 +412,23 @@ interface AssistantBubbleProps {
   maxWidth: string;
 }
 
-// 助手气泡：含 AgentTrace / Reasoning / 启动提示 / 流式光标 / 分支按钮。
-// hover 状态本身只影响"分支按钮显隐"，封装在此组件内部，避免污染 UserBubble。
+// 助手气泡：含 AgentTrace / Reasoning / 启动提示 / 流式光标 / 分支按钮 / 复制按钮。
+// hover 状态本身只影响"分支按钮 / 复制按钮显隐"，封装在此组件内部，避免污染 UserBubble。
 function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBubbleProps) {
   const [hover, setHover] = useState(false);
-  const [showBranchBtn, setShowBranchBtn] = useState(false);
+  // hover 触发后需等 80ms 延迟计时器到期才翻 true，以过滤快速划过的误触
+  const [hoverDelayElapsed, setHoverDelayElapsed] = useState(false);
+  const hasBranches = useCanvasStore(
+    (s) => selectBranchesFromMessage(s, message.nodeId, message.sequence).length > 0,
+  );
 
   // 80ms hover 延迟避免快速划过时按钮闪烁（视觉规范文档"微交互手感"建议）
   useEffect(() => {
     if (!hover) {
-      setShowBranchBtn(false);
+      setHoverDelayElapsed(false);
       return;
     }
-    const timer = setTimeout(() => setShowBranchBtn(true), 80);
+    const timer = setTimeout(() => setHoverDelayElapsed(true), 80);
     return () => clearTimeout(timer);
   }, [hover]);
 
@@ -420,7 +438,8 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
   // 启动过渡（文档 §4.5）：streaming 已开始但 content/reasoning/trace 全空的瞬间
   // 显示"AI 正在准备工具调用…"，让用户对按下 Enter 后的等待有明确反馈
   const showStartupHint = isStreaming && !hasAgentTrace && !hasReasoning && !message.content;
-  const showBranchControl = message.status === 'complete' && showBranchBtn;
+  // 消息完成 + 延迟到期 双重守卫：streaming 中途不应显示复制/分支按钮
+  const showHoverControls = message.status === 'complete' && hoverDelayElapsed;
 
   return (
     <div
@@ -452,7 +471,7 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
           maxWidth,
           color: '#1e293b',
           fontSize,
-          lineHeight: 1.6,
+          lineHeight: 1.65,
         }}
       >
         <MarkdownContent content={message.content} isStreaming={isStreaming} />
@@ -461,9 +480,61 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
       {message.status === 'complete' && (
         <BranchBadge nodeId={message.nodeId} sequence={message.sequence} />
       )}
-      {showBranchControl && <BranchButton onBranch={onBranch} />}
+      {/* 复制按钮：与 UserBubble 编辑按钮位置对称（左下）。当该消息已派生分支（BranchBadge 占据
+          left:0）时往右让位，避免 hover 时遮挡常驻的分支徽章。 */}
+      {showHoverControls && <CopyButton content={message.content} hasBranchBadge={hasBranches} />}
+      {showHoverControls && <BranchButton onBranch={onBranch} />}
     </div>
   );
+}
+
+// 📋 复制按钮：与 EditButton 镜像同款胶囊；点击调原生剪贴板 API（保留 markdown 原文），
+// 失败回退到 execCommand 兜底，避免 Electron 非安全上下文（如 file:// 协议）下的可用性差异。
+// hasBranchBadge=true 时 left 右移 56px，为常驻的 BranchBadge 腾出空间。
+function CopyButton({ content, hasBranchBadge }: { content: string; hasBranchBadge: boolean }) {
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        copyViaExecCommand(content);
+      }
+      toast.success('已复制');
+    } catch {
+      try {
+        copyViaExecCommand(content);
+        toast.success('已复制');
+      } catch {
+        toast.error('复制失败');
+      }
+    }
+  };
+  return (
+    <button
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={handleCopy}
+      title="复制此消息原文（保留 markdown）"
+      style={{ position: 'absolute', left: hasBranchBadge ? 56 : 0, bottom: -8, ...pillPrimaryDefault }}
+    >
+      📋 复制
+    </button>
+  );
+}
+
+// execCommand 兜底路径：navigator.clipboard 在 Electron file:// 协议或旧版 WebView
+// 非安全上下文下会缺失或抛权限错误，此时退回 textarea+select+execCommand 方案。
+// 插入到屏幕外（left:-9999px）而非 display:none，是因为 select() 对不可见元素无效。
+function copyViaExecCommand(text: string) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(ta);
+  if (!ok) throw new Error('execCommand copy failed');
 }
 
 // 父节点视角的"已派生 N 个分支"徽章。常驻显示（不依赖 hover），
@@ -501,12 +572,10 @@ function BranchBadge({ nodeId, sequence }: { nodeId: string; sequence: number })
         }}
         title={`已派生 ${branches.length} 个分支`}
         style={{
-          fontSize: 11,
+          ...pillBase,
           color: '#6366f1',
           background: '#EEF2FF',
           border: '1px solid #c7d2fe',
-          padding: '2px 8px',
-          borderRadius: 12,
           cursor: 'pointer',
           fontWeight: 500,
         }}
@@ -590,19 +659,7 @@ function BranchButton({ onBranch }: { onBranch: () => void }) {
         e.stopPropagation();
         onBranch();
       }}
-      style={{
-        position: 'absolute',
-        right: 0,
-        bottom: -8,
-        fontSize: 11,
-        color: '#6366f1',
-        background: '#ffffff',
-        border: '1px solid #c7d2fe',
-        padding: '2px 8px',
-        borderRadius: 12,
-        cursor: 'pointer',
-        boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-      }}
+      style={{ position: 'absolute', right: 0, bottom: -8, ...pillPrimaryDefault }}
     >
       ↳ 从这里分支
     </button>
@@ -642,7 +699,7 @@ function ReasoningBlock({ content, isStreaming }: { content: string; isStreaming
       {expanded ? (
         <>
           <span style={{ fontWeight: 500 }}>💭 思考过程</span>
-          <div style={{ marginTop: 4, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+          <div style={{ marginTop: 4, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
             {content}
           </div>
         </>

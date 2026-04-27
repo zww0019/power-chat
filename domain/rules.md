@@ -69,16 +69,22 @@
 - 最后确认：2026-04-26
 
 ## R012 · 节点标题为 8–15 汉字名词性短语
-- 高频后台静默调用，每节点对话累计每 3 轮触发一次
+- 双轨制（D006）：
+  - **自动轨**：每 3 轮对话（messages.length 满足 ≥6 且 % 6 === 0）后端 `sendMessage.onComplete` 触发，通过 SSE `title` / `title_error` 事件透传
+  - **主动轨**：用户点击节点 header / 折叠卡 / 大屏 Modal 标题旁的 ↻ 图标按钮，调 `POST /api/nodes/:id/regenerate-title`
+- 永远强制重新生成（两轨都不判断 node.title 是否已有值）；失败 toast 提示原因，旧标题保留不变
 - 必须是名词性短语，不允许动词起头（"东南亚消费习惯差异" √；"讨论了东南亚消费习惯差异" ×）
-- max_tokens 硬上限 30
-- 来源：视觉规范文档 §4.3
-- 最后确认：2026-04-26
+- max_tokens 硬上限 30 / temperature 0.2 / 用 `settings.llmFastModel ?? settings.llmModel`
+- 来源：视觉规范文档 §4.3 + 决策 D006（2026-04-27 双轨制版）
+- 最后确认：2026-04-27
 
 ## R013 · 视觉硬约束
-- 节点边框 0.5px；圆角 8px；折叠态宽 200px / 高 56-60px；展开态宽 360px
-- 节点 fullscreen 形态（大屏 Modal）：宽 `min(70vw, 900px)`，高 `min(80vh, 800px)`，居中覆盖；遮罩 `rgba(0,0,0,0.4)`；header 高 48px；body padding `16px 24px`；内部字号 14px（比展开态 13px 略放大）
-- 字号阶梯仅 22 / 16 / 14 / 13 / 11 / 10 六档（fullscreen 引入 14）；weight 仅 400 / 500（禁用 600+）
+- 节点边框 0.5px；圆角 8px；折叠态宽 200px / 高 56-60px（折叠卡内行间 gap 4px）；展开态宽 360px
+- 节点 fullscreen 形态（大屏 Modal）：宽 `min(70vw, 900px)`，高 `min(80vh, 800px)`，居中覆盖；遮罩 `rgba(0,0,0,0.4)`；header 高 48px、标题字号 16px；body padding `16px 24px`；正文字号 14px（与 inline 对齐）
+- 节点展开态 Header：高 36px、标题字号 14px
+- 节点对话气泡：正文 14px / 行高 1.65 / `padding:'8px 12px'`（user 气泡 + assistant 气泡 inline / fullscreen 一致）
+- 节点输入框：inline `padding:'10px 14px'` / fullscreen `padding:'12px 24px'` / 字号 14px
+- 字号阶梯仅 22 / 16 / 14 / 13 / 11 / 10 六档（fullscreen 标题 16；节点 Header / 气泡 / 输入框统一 14）；weight 仅 400 / 500（禁用 600+）
 - 配色 token：对话节点 `#FFFFFF + #E5E3DA`；提炼节点 `#FAEEDA + #EF9F27 + #412402 + #BA7517`；活跃边框 `#185FA5`；连线 `#C8C6BD`；页面背景 `#F1EFE8`
 - 边的几何为 cubic bezier，自适应 4 方向锚点（top/right/bottom/left）：按父子节点中心点 dx/dy 主轴方向择最近一对边中点为起终点，控制点沿锚点法向外推 |delta|/2；锚点坐标按节点 collapsed/expanded 真实尺寸（折叠 200×56 dialogue / 200×60 refined，展开 360×200）计算，不用估算高度
 - 网格 22px 圆点，透明度 4–5%
@@ -86,8 +92,9 @@
 - 帮助弹窗（HelpDialog）：480px × 自适应（max-height 80vh, 内容溢出滚动）；遮罩 `rgba(15,23,42,0.45)`；圆角 8px、边框 `0.5px solid #E5E3DA`；ESC / 点遮罩 / × 三路关闭
 - Modal / 浮层 zIndex 层级表（高在前层）：SettingsDialog 1000 → HelpDialog 300 → NodeFullscreenModal 200 → toolbar 100 → minimap 90；新增 Modal 应落入此区间，避免与 settings 同层引发拦截
 - toolbar 按钮统一规格：背景 `#FFFFFF` / 边框 `1px solid #e2e8f0` / `padding:'6px 10px'` / `borderRadius:6` / 字号 13 / 颜色 `#475569` / `boxShadow:'0 1px 4px rgba(0,0,0,0.04)'`；toolbar 容器 `pointerEvents:none`、按钮各自 `pointerEvents:auto`
-- 来源：视觉规范文档 §一/二/三 + 2026-04-26 fullscreen/minimap 增量 + 2026-04-26 自适应锚点修复（D024）+ 2026-04-26 帮助弹窗（D025）
-- 最后确认：2026-04-26
+- 消息操作胶囊按钮统一规格：字号 11 / `padding:'3px 10px'` / `borderRadius:12`，由 NodeChatPanel 内 `pillBase` + `pillPrimary(disabled?)` 常量提供；hover 80ms 触发显示（编辑/复制/分支按钮）；视觉变体仅在 color/border/background 上分化
+- 来源：视觉规范文档 §一/二/三 + 2026-04-26 fullscreen/minimap 增量 + 2026-04-26 自适应锚点修复（D024）+ 2026-04-26 帮助弹窗（D025）+ 2026-04-27 字号松绑与胶囊样式抽取（D026）
+- 最后确认：2026-04-27
 
 ## R014 · Agent 启动权属用户（原则 C）
 - agent 的合法触发是用户用动作动词（"搜""查""找""读""帮我搜"等）明确表达的工具使用意图

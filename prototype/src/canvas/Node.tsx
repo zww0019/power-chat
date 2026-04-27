@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchSourceOfNode } from '../store/canvasStore';
 import { api } from '../api/client';
 import type { Node as NodeType, Message } from '../types';
 import { NodeChatPanel } from './NodeChatPanel';
 import { performRetryRefine, focusNodeOnMessage } from './nodeActions';
+import { useTitleRegeneration } from './useTitleRegeneration';
 
 // 摘要长度：折叠卡/header 横幅都用同一个值。25 字在 200/360px 宽度下能容纳一行不溢出
 const SOURCE_SUMMARY_MAX = 25;
@@ -179,6 +181,7 @@ interface NodeHeaderProps {
 }
 
 function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeader, onRetryRefine, onFold, onOpenFullscreen }: NodeHeaderProps) {
+  const [hovered, setHovered] = useState(false);
   const headerBg = isRefined ? '#F5E2C0' : '#FAFAF7';
   const headerBorder = isRefined ? '#EAD4A8' : '#EFEDE5';
   const headerTextColor = isRefined ? '#412402' : '#475569';
@@ -189,6 +192,8 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
     <div
       data-drag-handle
       onPointerDown={(e) => onPointerDownHeader(e, node.id)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         padding: '8px 12px',
         borderBottom: `0.5px solid ${headerBorder}`,
@@ -202,10 +207,14 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
         boxSizing: 'border-box',
       }}
     >
-      <span style={{ fontSize: 11, color: iconColor }}>{isRefined ? '◆' : '💬'}</span>
-      <span style={{ flex: 1, fontWeight: 500, color: headerTextColor, fontSize: 13, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+      <span style={{ fontSize: 13, color: iconColor }}>{isRefined ? '◆' : '💬'}</span>
+      <span style={{ flex: 1, fontWeight: 500, color: headerTextColor, fontSize: 14, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
         {node.title ?? fallbackTitle}
       </span>
+      {/* 仅对话节点 + hover 时显示标题刷新按钮（提炼节点的 title 由系统定值，不参与重新生成）*/}
+      {!isRefined && hovered && !isStreaming && (
+        <RegenerateTitleButton nodeId={node.id} />
+      )}
       <HeaderStatusBadge isStreaming={isStreaming} isActive={isActive} expanded />
       {isRefined && !isStreaming && (
         <button
@@ -258,6 +267,37 @@ const iconBtn: React.CSSProperties = {
   padding: 0,
 };
 
+/**
+ * 标题刷新按钮：用户点击主动触发标题重新生成（替代旧的"按对话轮数自动触发"）。
+ *
+ * 视觉与交互：
+ * - 父容器 hover 时才挂载（由调用方控制）；置于标题文本右侧、状态徽章左侧
+ * - loading 期间按钮 disabled + 旋转动画，避免重复点击
+ * - 失败时由 performRegenerateTitle 内部 toast 提示，按钮自身只负责状态切换
+ */
+function RegenerateTitleButton({ nodeId }: { nodeId: string }) {
+  const { loading, trigger } = useTitleRegeneration(nodeId);
+  return (
+    <button
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={trigger}
+      disabled={loading}
+      style={{ ...iconBtn, cursor: loading ? 'wait' : 'pointer', opacity: loading ? 0.5 : 1 }}
+      title={loading ? '生成中…' : '重新生成标题'}
+    >
+      <span style={{ display: 'inline-block', animation: loading ? 'spin 1s linear infinite' : 'none' }}>↻</span>
+    </button>
+  );
+}
+
+// 注入旋转动画 keyframes（仅一次）。放在模块级而非组件内，避免每次渲染重复 append。
+if (typeof document !== 'undefined' && !document.getElementById('node-title-spin-keyframes')) {
+  const styleEl = document.createElement('style');
+  styleEl.id = 'node-title-spin-keyframes';
+  styleEl.textContent = '@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+  document.head.appendChild(styleEl);
+}
+
 interface CollapsedCardProps {
   node: NodeType;
   isRefined: boolean;
@@ -282,7 +322,7 @@ const collapsedShellBase: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   justifyContent: 'center',
-  gap: 2,
+  gap: 4,
 };
 
 // 状态徽章：流式 ● / 活跃 ● 活跃中（互斥）
@@ -294,6 +334,7 @@ function StatusBadge({ isStreaming, isActive }: { isStreaming: boolean; isActive
 
 // 折叠态对话节点（按文档 §2.1）：meta "对话 · N 轮" / title / 可选"分支自..."来源行
 function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, messageCount, onPointerDownHeader }: CollapsedCardProps) {
+  const [hovered, setHovered] = useState(false);
   const roundCount = Math.max(0, Math.ceil(messageCount / 2));
   const title = node.title ?? '新节点';
   const branchSource = useCanvasStore((s) => selectBranchSourceOfNode(s, node.id));
@@ -304,14 +345,19 @@ function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, message
     <div
       style={{ ...styleBase, ...collapsedShellBase, width: 200, height: cardHeight }}
       onPointerDown={(e) => onPointerDownHeader(e, node.id)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>
         <span style={{ fontSize: 11, color: '#94a3b8' }}>💬</span>
         <span style={{ flex: 1, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>{`对话 · ${roundCount} 轮`}</span>
         <StatusBadge isStreaming={isStreaming} isActive={isActive} />
       </div>
-      <div style={{ fontSize: 13, fontWeight: 500, color: '#1e293b', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
-        {title}
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: '#1e293b', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+          {title}
+        </span>
+        {hovered && !isStreaming && <RegenerateTitleButton nodeId={node.id} />}
       </div>
       {branchSource && (
         <BranchSourceLine

@@ -81,17 +81,35 @@
 - CanvasNode 当前拆为 ExpandedNodeView / NodeHeader / NodeFooter / RefinedNodeBody / DialogueNodeBody / CollapsedDialogueCard / CollapsedRefinedCard 等多组件
 - lizard 在 CI 中应作为门禁（`-C 15` 阈值不放宽）
 
-## D006 · 节点标题生成节流粒度为每 3 轮对话
-**决策日期**: 2026-04-26
-**背景**: 标题生成是高频后台调用，每条对话都触发会浪费 token；不触发又会让节点折叠态长期显示"新节点"
-**决定**: 每节点对话累计满 3 轮（user+assistant 各算一条，即每 6 条 message）触发一次标题更新
+## D006 · 节点标题生成双轨制（2026-04-27 第二次修订：自动轨 + 主动轨并存）
+**决策日期**: 2026-04-27（同日两次迭代：先废弃自动→改主动；后又恢复自动并保留主动，形成双轨）
+**背景**:
+- 2026-04-26 旧方案：每 3 轮对话节流自动触发；触发计数器用 sequence 偏移（`(nextSeq+2)%6`）+ 失败 `.catch(() => null)` 静默，导致用户反馈"对话 6 轮但标题不更新"
+- 2026-04-27 第一次修订：完全废弃自动触发，改为用户主动点击 ↻ 按钮
+- 2026-04-27 第二次修订：保留按钮的同时**恢复自动触发**，但修掉旧实现的两个根本 bug
+
+**决定（双轨制）**:
+1. **自动轨**：在 `sendMessage` 的 `runAgentAssistantStream` 的 `onComplete` 内触发，每 3 轮（6 条 message）一次
+   - 触发条件改用**实际消息条数**：`messages.length >= 6 && messages.length % 6 === 0`，规避 sequence 偏移 bug
+   - 永远强制覆盖（不判断 `node.title` 是否已有值，与主动轨语义对齐）
+   - 通过 SSE `'title'` 事件透传成功标题；失败时通过新增的 `'title_error'` 事件透传简化错误码（empty_node / not_configured / llm_failed / unknown），前端 toast 提示
+   - 事件顺序硬约束（E016）：title / title_error 事件必须在 done 之前 yield
+2. **主动轨**：用户点击节点 header / 折叠卡 / 大屏 Modal 标题旁 hover 显示的 ↻ 图标按钮
+   - 走独立 `POST /api/nodes/:id/regenerate-title` 端点，一次性返回 `{title}`
+   - 成功 toast.success；失败 toast.error
+3. **共用错误码语义**：`conversation.classifyTitleError`（后端归类）和 `nodeActions.extractTitleErrorCode`（前端从 HTTP 错误响应提取）输出同一组 code，前端 `titleErrorMessage` 统一映射 toast 文案——两轨之间无文案漂移
+
 **理由**:
-- 3 轮足以让对话主题稳定，不会过早被零碎话题误导
-- 频率低于"每轮触发"，对成本影响小
-- 失败静默（不影响主流程），用户可手动触发提炼任务做精确总结
+- 自动轨保证"长期对话节点的标题保鲜度"——用户不必每 3 轮去手动点一下
+- 主动轨保证"用户主动意图永远成立"——不依赖任何触发条件，随时可强制刷新
+- 错误可见（修掉旧 bug）：自动轨不再静默吞错，失败时 toast 提示
+- sequence 偏移 bug 从根上规避：用 `messages.length` 计数而非 sequence 整除
+
 **影响**:
-- title 字段持久化到 db.json，hydrate 后可见
-- 每 3 轮额外发起一次轻量 LLM 调用（max_tokens=30，使用快模型）
+- 类型变更：`StreamEvent` 恢复 `'title'` + 新增 `'title_error'`；`runAgentAssistantStream` 恢复 `onComplete` 参数
+- 后端：`conversation.sendMessage` 的 `onComplete` 闭包；`classifyTitleError` 函数把领域错误转成简化 code
+- 前端：`applyStreamEvent` 增加 `case 'title' / 'title_error'`；`titleErrorMessage` 共享映射
+- 历史 db.json 中已有的标题保留不动，不做数据迁移
 
 ## D007 · 引入 llmFastModel 字段供高频轻量调用
 **决策日期**: 2026-04-26
@@ -440,4 +458,40 @@
 - `domain/modules/ui-interaction.md` 弹窗模态章节追加 HelpDialog 条目
 - 后续若新增 Modal，需查 R013 zIndex 层级表选合适层级；若新增 toolbar 按钮，复用 `toolbarBtnStyle` 常量
 - 帮助内容若需扩展（如新增快捷键），直接改 `HelpDialog.tsx` 的 JSX；同步更新 R013 来源行
+
+## D026 · 字号松绑 + AI 消息复制 + 胶囊样式抽取
+**决策日期**: 2026-04-27
+**背景**: 用户反馈"字体太小且看着太密"，并要求"AI 回复消息补充复制功能，逻辑与编辑消息一致"。规划阶段需在以下选项间取舍：
+- 文字优化幅度：是否升档 / 是否突破 R013 字号阶梯 / 行高与 padding 调整粒度
+- 复制按钮位置：右下并排（与分支按钮同侧）/ 左下（与编辑按钮位置对称）/ 右下分层
+- 复制内容格式：保留原始 markdown / 渲染为纯文本
+- 是否给 user 消息也加复制按钮
+- 复制按钮是否需要 disabled 态（与编辑按钮的 R021 守卫"一致"）
+- 重复样式抽取粒度：5 处胶囊按钮各持一份 / 抽 1 个常量 / 抽函数 + 变体
+
+**决定**:
+- **字号**：inline 气泡 13→14（与 fullscreen 14 对齐）；节点 Header 13→14；输入框 13→14；折叠卡 gap 2→4；操作按钮 padding 2×8→3×10、字号维持 11；行高 1.6→1.65；大屏 Modal 标题 15→16（顺手修复 R013 越档）。所有调整严格在 R013 现有六档（22/16/14/13/11/10）内迁移，不引入新档位
+- **复制按钮位置**：左下 `left:0, bottom:-8`，与 user 气泡编辑按钮位置对称；当该消息已派生分支（BranchBadge 占据 `left:0`）时，复制按钮 `left` 改为 56 让位避让
+- **复制内容**：保留原始 markdown 符号（直接写入 `message.content`），不剥离；不带入 `reasoningContent` / `agentTrace`（已是独立字段，无需额外处理）
+- **不给 user 消息加复制**：v1 范围限定
+- **不加 disabled 态**：复制不修改数据，与 R021 守卫的"截断/编辑"语义无关；"逻辑与编辑消息一致"的"一致"指 hover 触发 + 胶囊视觉规格 + 位置对称，不延伸到 R021 守卫
+- **剪贴板实现**：`navigator.clipboard.writeText` 主路径 + `document.execCommand('copy')` 兜底（覆盖 Electron file:// 非安全上下文）；成功/失败用 `toastStore` 反馈
+- **胶囊样式抽取**：在 NodeChatPanel.tsx 内引入 `pillBase`（共形：fontSize 11 / padding 3×10 / borderRadius 12）+ `pillPrimary(disabled?)`（紫边白底主色变体），CopyButton/EditButton/BranchButton/BranchBadge/UserBubbleEditor 取消提交按钮统一引用，调整视觉规范改 1 处生效
+- **标题刷新逻辑抽取**：新建 `prototype/src/canvas/useTitleRegeneration.ts` hook，节点内 / 大屏 Modal 两处复用同一份 loading 守卫 + stopPropagation + try/finally；用 `loadingRef` 而非把 `loading` 纳入 `useCallback` 依赖，避免重建 trigger 引用导致消费方重渲
+
+**理由**:
+- 字号在档内迁移而非引入 15px：保持 R013 六档纯度，避免视觉规范碎片化；inline 与 fullscreen 字号统一让用户在两种形态间切换时无视觉跳跃
+- 左下对称位置：与 user 编辑按钮形成"操作按钮固定在气泡左下"的视觉规律，新增按钮无需额外学习成本；右下保留给"分支"语义按钮（独立维度）
+- 保留 markdown：用户在外部编辑器（VSCode / Notion / Markdown 渲染器）粘贴时能保留格式；若需纯文本可在外部去渲染
+- 不加 disabled：避免给用户造成"复制也会破坏数据"的错误心智模型
+- execCommand 兜底：Electron 早期版本或部分 file:// 上下文 `navigator.clipboard` 不可用，历史踩坑经验保留
+- 抽 pillBase + pillPrimary：jscpd 在第一版扫描中命中 5 处样式重复（34 行 257 tokens），抽取后复扫 0 clones；属于真实重复
+- 抽 useTitleRegeneration hook：jscpd 命中 11 行 84 tokens 重复，且节点内 / 大屏 Modal 两处的标题刷新行为完全同形，无差异化；用 ref 而非依赖项保护 trigger 引用稳定，是 React useCallback 处理"读快照而非订阅状态"的标准模式
+
+**影响**:
+- `domain/rules.md#R013` 更新字号阶梯说明（fullscreen 不再"略放大"，inline 也用 14）+ 新增"消息操作胶囊按钮统一规格"条目
+- `domain/modules/conversation.md` 新增"AI 消息复制（仅前端能力）"小节
+- `prototype/src/canvas/NodeChatPanel.tsx` 新增 `pillBase` / `pillPrimary` / `CopyButton` / `copyViaExecCommand`；EditButton/BranchButton/BranchBadge/UserBubbleEditor 全部改用胶囊常量
+- 新增 `prototype/src/canvas/useTitleRegeneration.ts` hook
+- 后续新增"消息上的 hover 操作按钮"应直接复用 `pillPrimary()`；新增标题刷新入口直接调 `useTitleRegeneration(nodeId)`；不再单独写 loading 守卫
 

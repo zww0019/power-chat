@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 import { NodeChatPanel } from './NodeChatPanel';
+import { useTitleRegeneration } from './useTitleRegeneration';
 
 // 节点大屏对话 Modal（节点的第三态 fullscreen，决策来自规划阶段）：
 // - 覆盖层 Modal：半透明遮罩 + 居中容器，画布在背后保持原状
@@ -32,6 +33,8 @@ export function NodeFullscreenModal() {
   if (!fullscreenNodeId || !node) return null;
 
   const isRefined = node.type === 'refined';
+  // 仅对话节点支持标题重新生成（提炼节点的 title 是系统定值，不参与）
+  const canRegenerateTitle = !isRefined && !isStreaming;
   const headerBg = isRefined ? '#F5E2C0' : '#FAFAF7';
   const headerBorder = isRefined ? '#EAD4A8' : '#EFEDE5';
   const headerTextColor = isRefined ? '#412402' : '#475569';
@@ -68,45 +71,114 @@ export function NodeFullscreenModal() {
           fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif',
         }}
       >
-        <div
-          style={{
-            padding: '12px 20px',
-            borderBottom: `0.5px solid ${headerBorder}`,
-            display: 'flex',
-            gap: 10,
-            alignItems: 'center',
-            background: headerBg,
-            height: 48,
-            boxSizing: 'border-box',
-            flex: '0 0 auto',
-          }}
-        >
-          <span style={{ fontSize: 13, color: iconColor }}>{isRefined ? '◆' : '💬'}</span>
-          <span style={{ flex: 1, fontWeight: 500, color: headerTextColor, fontSize: 15, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
-            {node.title ?? fallbackTitle}
-          </span>
-          {isStreaming && <span style={{ fontSize: 12, color: '#185FA5' }}>● 思考中</span>}
-          <button
-            onClick={closeFullscreen}
-            title="关闭大屏（ESC）"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 18,
-              color: '#94a3b8',
-              width: 28,
-              height: 28,
-              borderRadius: 4,
-              padding: 0,
-              lineHeight: 1,
-            }}
-          >
-            ×
-          </button>
-        </div>
+        <FullscreenHeader
+          headerBg={headerBg}
+          headerBorder={headerBorder}
+          iconColor={iconColor}
+          headerTextColor={headerTextColor}
+          isRefined={isRefined}
+          title={node.title ?? fallbackTitle}
+          isStreaming={isStreaming}
+          canRegenerateTitle={canRegenerateTitle}
+          nodeId={fullscreenNodeId}
+          onClose={closeFullscreen}
+        />
         <NodeChatPanel node={node} isStreaming={isStreaming} mode="fullscreen" />
       </div>
+    </div>
+  );
+}
+
+interface FullscreenHeaderProps {
+  headerBg: string;
+  headerBorder: string;
+  iconColor: string;
+  headerTextColor: string;
+  isRefined: boolean;
+  title: string;
+  isStreaming: boolean;
+  canRegenerateTitle: boolean;
+  nodeId: string;
+  onClose: () => void;
+}
+
+// 大屏 header：图标 + 标题 + (hover 时) 刷新按钮 + 流式徽章 + 关闭按钮。
+// 拆出独立组件是为了让 hover 状态局部化（hover 状态变更不应触发整个 Modal 重渲染）。
+function FullscreenHeader({
+  headerBg,
+  headerBorder,
+  iconColor,
+  headerTextColor,
+  isRefined,
+  title,
+  isStreaming,
+  canRegenerateTitle,
+  nodeId,
+  onClose,
+}: FullscreenHeaderProps) {
+  const [hovered, setHovered] = useState(false);
+  const { loading, trigger: handleRegenerate } = useTitleRegeneration(nodeId);
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        padding: '12px 20px',
+        borderBottom: `0.5px solid ${headerBorder}`,
+        display: 'flex',
+        gap: 10,
+        alignItems: 'center',
+        background: headerBg,
+        height: 48,
+        boxSizing: 'border-box',
+        flex: '0 0 auto',
+      }}
+    >
+      <span style={{ fontSize: 14, color: iconColor }}>{isRefined ? '◆' : '💬'}</span>
+      <span style={{ flex: 1, fontWeight: 500, color: headerTextColor, fontSize: 16, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+        {title}
+      </span>
+      {canRegenerateTitle && hovered && (
+        <button
+          onClick={handleRegenerate}
+          disabled={loading}
+          title={loading ? '生成中…' : '重新生成标题'}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            cursor: loading ? 'wait' : 'pointer',
+            fontSize: 16,
+            color: '#94a3b8',
+            width: 28,
+            height: 28,
+            borderRadius: 4,
+            padding: 0,
+            opacity: loading ? 0.5 : 1,
+            lineHeight: 1,
+          }}
+        >
+          <span style={{ display: 'inline-block', animation: loading ? 'spin 1s linear infinite' : 'none' }}>↻</span>
+        </button>
+      )}
+      {isStreaming && <span style={{ fontSize: 12, color: '#185FA5' }}>● 思考中</span>}
+      <button
+        onClick={onClose}
+        title="关闭大屏（ESC）"
+        style={{
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          fontSize: 18,
+          color: '#94a3b8',
+          width: 28,
+          height: 28,
+          borderRadius: 4,
+          padding: 0,
+          lineHeight: 1,
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }
