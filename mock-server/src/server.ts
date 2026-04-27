@@ -6,6 +6,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import {
   ContextOverflowError,
+  MessageReferencedByBranchError,
   NotConfiguredError,
   StreamingNodeError,
 } from '../../src/types.js';
@@ -78,6 +79,31 @@ app.post('/api/nodes/:id/messages/abort', (req, res) => {
     return;
   }
   res.status(204).end();
+});
+
+// 截断式删除消息（用户编辑触发）。
+// fromSequence 通过 query 传：DELETE /api/nodes/:id/messages?fromSequence=N
+// 守卫错误映射：StreamingNodeError → 409 streaming；MessageReferencedByBranchError → 409 branch_referenced
+app.delete('/api/nodes/:id/messages', async (req, res) => {
+  const fromSequence = Number(req.query.fromSequence);
+  if (!Number.isInteger(fromSequence) || fromSequence < 0) {
+    res.status(400).json({ error: 'bad_request', message: 'fromSequence (non-negative integer) required' });
+    return;
+  }
+  try {
+    const deleted = await conversation.truncateMessages(req.params.id, fromSequence);
+    res.status(200).json({ deleted });
+  } catch (e: any) {
+    if (e instanceof StreamingNodeError) {
+      res.status(409).json({ error: 'streaming', message: e.message });
+      return;
+    }
+    if (e instanceof MessageReferencedByBranchError) {
+      res.status(409).json({ error: 'branch_referenced', message: e.message, childNodeIds: e.childNodeIds });
+      return;
+    }
+    res.status(500).json({ error: 'internal', message: e.message });
+  }
 });
 
 // === conversation ===

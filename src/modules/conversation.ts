@@ -9,6 +9,7 @@
 //                   agentTrace 永不进入下游（R019 协议无关守卫）—— 详见 toLLMMessage 注释
 
 import type { Message, Node, Edge, LLMMessage, StreamEvent } from '../types.js';
+import { MessageReferencedByBranchError, StreamingNodeError } from '../types.js';
 import { getPersistence } from './persistence.js';
 import * as canvas from './canvas.js';
 import { completeChat } from './llm-client.js';
@@ -254,6 +255,35 @@ const TITLE_SYSTEM_PROMPT = `你是一个文本概括助手。
   - 好：「东南亚消费习惯差异」
   - 坏：「讨论了东南亚消费习惯差异」
 - 中文输出。`;
+
+// === 截断式删除消息（用户编辑触发，详见 domain/edge-cases E019）===
+//
+// 删除该节点 sequence ≥ fromSequence 的所有 messages。
+// 三层守卫：
+// (a) 流式中节点拒绝（INV-7 思路扩展）；(b) 被任一分支引用拒绝（2c 硬阻断）；
+// (c) 调用方负责 fromSequence 合法性（≥ 0）。
+//
+// 守卫顺序：先查 streaming → 再查分支引用 → 再实际删除。
+export async function truncateMessages(nodeId: string, fromSequence: number): Promise<number> {
+  if (canvas.isStreaming(nodeId)) {
+    throw new StreamingNodeError(nodeId);
+  }
+  // 分支引用守卫：任一出边 branch 的 inheritedUntilSequence ≥ fromSequence 都意味着
+  // 子分支引用了"将被清空"范围内的消息——拒绝操作避免 silent context corruption。
+  const outboundEdges = await canvas.getEdgesOfParent(nodeId);
+  const blockingChildIds = outboundEdges
+    .filter((e) => e.edgeKind === 'branch' && e.inheritedUntilSequence !== null && e.inheritedUntilSequence >= fromSequence)
+    .map((e) => e.childNodeId);
+  if (blockingChildIds.length > 0) {
+    throw new MessageReferencedByBranchError(blockingChildIds);
+  }
+
+  const p = getPersistence();
+  const all = await p.list<Message>('messages', (m) => m.nodeId === nodeId && m.sequence >= fromSequence);
+  // 守卫已在上方串行完成，删除操作之间无依赖关系，并行执行降低延迟
+  await Promise.all(all.map((m) => p.delete('messages', m.id)));
+  return all.length;
+}
 
 // === 分支动作 ===
 // 80px：折叠态节点高度上限约 60px，留 20px 视觉间距，使多次分支产生的子节点不互相遮挡

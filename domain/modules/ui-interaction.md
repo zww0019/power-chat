@@ -64,6 +64,15 @@
 - 展开是异步重渲染，必须两层 requestAnimationFrame 等待 layout 完成后再滚，单层不够
 - 不处理 fullscreen Modal 场景：Modal 遮罩拦截画布点击，此场景下用户无法触发跳转
 
+## 用户消息编辑（重新生成 AI 回复）
+- user 气泡 hover 80ms 后左下角显示 `✎ 编辑` 按钮（与 AssistantBubble 右下角的"↳ 从这里分支"按钮镜像对称，保持气泡尾部干净）
+- 进入编辑模式后气泡变 textarea，预填原内容并自动 focus 到末尾
+- Enter 提交 / Shift+Enter 换行 / ESC 取消（与节点 footer 输入框约定一致）
+- 提交不弹确认对话框：被分支引用的消息按钮已 disabled（参见 R021），剩余编辑都不会破坏其他节点状态——直接执行截断+重发
+- 按钮 disabled 条件：(1) 节点流式中（"AI 回复中，无法编辑"）；(2) 该消息被任一分支引用（"此消息已被分支引用，编辑会破坏分支上下文"）；disabled 时仍显示但灰色，让用户知道有这个能力
+- 内容未变更或为空时静默取消（不发起截断+重发，避免无意义的 LLM 调用）
+- 仅 user 消息可编辑，assistant 消息无任何编辑入口
+
 ## Agent 轨迹区块（M4 起）
 - 视觉：浅冷灰 `#F5F4EE` 背景 / 圆角 6 / 内边距 10/12 / 字号 11px（R013 token） / text-secondary
 - 步骤图标：thought ●（4px 圆点）/ action → / failure ✕（颜色 `#A32D2D` 暗红）/ final ●

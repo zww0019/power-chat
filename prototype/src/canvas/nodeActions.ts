@@ -205,6 +205,41 @@ function findScrollableAncestor(start: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/**
+ * 编辑用户消息后重新生成 AI 回复。
+ *
+ * 流程：截断式删除 sequence ≥ editedSequence 的所有消息（含被编辑消息本身），
+ * 然后用新内容走标准 sendMessage 路径——sequence 因截断而自然接续，等价"重新发送"。
+ *
+ * 后端 truncate API 自带分支引用守卫（2c 硬阻断），UI 层在按钮 disabled 阶段已挡掉
+ * 危险编辑；后端守卫是防竞态兜底（编辑期间另一会话可能创建了新分支）。
+ */
+export async function performEditMessage(
+  nodeId: string,
+  editedSequence: number,
+  newContent: string,
+): Promise<void> {
+  const store = useCanvasStore.getState();
+  try {
+    await api.truncateMessages(nodeId, editedSequence);
+  } catch (e) {
+    const msg = (e as Error).message ?? String(e);
+    if (msg.includes('branch_referenced')) {
+      alert('该消息已被分支引用，无法编辑（请先删除相关子分支）');
+      return;
+    }
+    if (msg.includes('streaming')) {
+      alert('节点正在流式回复中，请稍后再试');
+      return;
+    }
+    console.error('truncateMessages failed', e);
+    alert(`编辑失败：${msg}`);
+    return;
+  }
+  store.removeMessagesFromSequence(nodeId, editedSequence);
+  await performSendMessage(nodeId, newContent);
+}
+
 /** 从节点的某条 AI 消息分支出新对话节点。 */
 export async function performBranch(parentNodeId: string, fromMessageId: string): Promise<void> {
   try {

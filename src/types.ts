@@ -244,3 +244,13 @@ export class StreamingNodeError extends Error {
     this.name = 'StreamingNodeError';
   }
 }
+
+// 编辑/截断式删除消息时，被分支引用的消息不可改变（2c 硬阻断）：
+// 若 fromSequence ≤ 任一出边 branch 的 inheritedUntilSequence，
+// 截断会让子分支的继承上下文凭空消失/内容静默改变——拒绝操作。
+export class MessageReferencedByBranchError extends Error {
+  constructor(public childNodeIds: string[]) {
+    super(`Cannot truncate: messages are referenced by ${childNodeIds.length} branch(es).`);
+    this.name = 'MessageReferencedByBranchError';
+  }
+}

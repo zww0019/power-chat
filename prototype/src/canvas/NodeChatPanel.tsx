@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
-import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage } from '../store/canvasStore';
+import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage, selectIsMessageReferencedByBranch } from '../store/canvasStore';
 import type { Node as NodeType, Message } from '../types';
 import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
 import { AgentTrace } from './AgentTrace';
-import { performSendMessage, performBranch, performAbort, focusNodeOnMessage } from './nodeActions';
+import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, performEditMessage } from './nodeActions';
 
 // inline：节点展开态内嵌（高度上限 480px，宽度跟随 360px 节点）；
 // fullscreen：大屏 Modal（高度 flex 占满 Modal 内容区，宽度由 Modal 容器决定）。
@@ -185,7 +185,7 @@ function MessageBubble({ message, onBranch, mode }: BubbleProps) {
   const fontSize = mode === 'fullscreen' ? 14 : 13;
   const maxWidth = mode === 'fullscreen' ? '78%' : '94%';
   if (message.role === 'user') {
-    return <UserBubble messageId={message.id} content={message.content} fontSize={fontSize} maxWidth={maxWidth} />;
+    return <UserBubble message={message} fontSize={fontSize} maxWidth={maxWidth} />;
   }
   return (
     <AssistantBubble
@@ -197,22 +197,195 @@ function MessageBubble({ message, onBranch, mode }: BubbleProps) {
   );
 }
 
-function UserBubble({ messageId, content, fontSize, maxWidth }: { messageId: string; content: string; fontSize: number; maxWidth: string }) {
+// 用户气泡：纯文本展示 + hover 显示 ✎ 编辑按钮 + 内联编辑模式。
+// 编辑提交走 performEditMessage（截断 + 重发）；按钮在节点流式中或消息被分支引用时禁用。
+function UserBubble({ message, fontSize, maxWidth }: { message: Message; fontSize: number; maxWidth: string }) {
+  const [hover, setHover] = useState(false);
+  const [showEditBtn, setShowEditBtn] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  // 两次独立订阅而非合并：让两个条件各自精确追踪所需切片，
+  // 避免合并后任一无关状态变化（如其他节点 streaming）触发整个 UserBubble 重渲
+  const isReferenced = useCanvasStore((s) => selectIsMessageReferencedByBranch(s, message.nodeId, message.sequence));
+  const isNodeStreaming = useCanvasStore((s) => s.streamingByNode[message.nodeId] === 'streaming');
+
+  // 80ms hover 延迟避免快速划过时按钮闪烁（与 AssistantBubble 的分支按钮同款手感）
+  useEffect(() => {
+    if (!hover) {
+      setShowEditBtn(false);
+      return;
+    }
+    const t = setTimeout(() => setShowEditBtn(true), 80);
+    return () => clearTimeout(t);
+  }, [hover]);
+
+  const startEdit = () => {
+    setDraft(message.content);
+    setEditing(true);
+  };
+  const cancelEdit = () => setEditing(false);
+  const submitEdit = () => {
+    const text = draft.trim();
+    // 空内容或内容未改变时静默取消——避免触发一次无意义的截断+重发
+    if (!text || text === message.content) {
+      setEditing(false);
+      return;
+    }
+    setEditing(false);
+    void performEditMessage(message.nodeId, message.sequence, text);
+  };
+
+  if (editing) {
+    return (
+      <UserBubbleEditor
+        messageId={message.id}
+        draft={draft}
+        setDraft={setDraft}
+        onSubmit={submitEdit}
+        onCancel={cancelEdit}
+        fontSize={fontSize}
+        maxWidth={maxWidth}
+      />
+    );
+  }
+
+  const editDisabled = isReferenced || isNodeStreaming;
+  const disabledTooltip = isNodeStreaming
+    ? 'AI 回复中，无法编辑'
+    : isReferenced
+      ? '此消息已被分支引用，编辑会破坏分支上下文'
+      : '';
+
+  return (
+    <div
+      data-message-id={message.id}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}
+    >
+      <div style={{ position: 'relative', maxWidth }}>
+        <div
+          style={{
+            background: '#eef2ff',
+            color: '#1e293b',
+            padding: '6px 10px',
+            borderRadius: 6,
+            fontSize,
+            lineHeight: 1.6,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {message.content}
+        </div>
+        {showEditBtn && (
+          <EditButton onEdit={startEdit} disabled={editDisabled} disabledTooltip={disabledTooltip} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ✎ 编辑按钮：与 AssistantBubble 的分支按钮镜像（左下 vs 右下），保持气泡尾部干净
+function EditButton({ onEdit, disabled, disabledTooltip }: { onEdit: () => void; disabled: boolean; disabledTooltip: string }) {
+  return (
+    <button
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        if (disabled) return;
+        e.stopPropagation();
+        onEdit();
+      }}
+      title={disabled ? disabledTooltip : '编辑此消息并重新生成 AI 回复'}
+      disabled={disabled}
+      style={{
+        position: 'absolute',
+        left: 0,
+        bottom: -8,
+        fontSize: 11,
+        color: disabled ? '#cbd5e1' : '#6366f1',
+        background: '#ffffff',
+        border: `1px solid ${disabled ? '#e2e8f0' : '#c7d2fe'}`,
+        padding: '2px 8px',
+        borderRadius: 12,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        boxShadow: disabled ? 'none' : '0 1px 4px rgba(0,0,0,0.08)',
+      }}
+    >
+      ✎ 编辑
+    </button>
+  );
+}
+
+interface UserBubbleEditorProps {
+  messageId: string;
+  draft: string;
+  setDraft: (v: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+  fontSize: number;
+  maxWidth: string;
+}
+
+// 编辑模式：textarea 替代气泡 + 提交/取消按钮。Enter=提交，Shift+Enter=换行，ESC=取消。
+function UserBubbleEditor({ messageId, draft, setDraft, onSubmit, onCancel, fontSize, maxWidth }: UserBubbleEditorProps) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    taRef.current?.focus();
+    taRef.current?.setSelectionRange(draft.length, draft.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onSubmit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      onCancel();
+    }
+  };
+
   return (
     <div data-message-id={messageId} style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-      <div
-        style={{
-          maxWidth,
-          background: '#eef2ff',
-          color: '#1e293b',
-          padding: '6px 10px',
-          borderRadius: 6,
-          fontSize,
-          lineHeight: 1.6,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {content}
+      <div style={{ maxWidth, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+        <textarea
+          ref={taRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={handleKey}
+          onPointerDown={(e) => e.stopPropagation()}
+          rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+          style={{
+            width: '100%',
+            background: '#eef2ff',
+            color: '#1e293b',
+            padding: '6px 10px',
+            border: '1px solid #c7d2fe',
+            borderRadius: 6,
+            fontSize,
+            fontFamily: 'inherit',
+            lineHeight: 1.6,
+            resize: 'vertical',
+            outline: 'none',
+            boxSizing: 'border-box',
+          }}
+        />
+        <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onCancel(); }}
+            style={{ padding: '2px 8px', borderRadius: 12, border: '1px solid #e2e8f0', background: '#ffffff', color: '#64748b', cursor: 'pointer' }}
+          >
+            取消
+          </button>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onSubmit(); }}
+            style={{ padding: '2px 8px', borderRadius: 12, border: '1px solid #6366f1', background: '#6366f1', color: '#ffffff', cursor: 'pointer' }}
+          >
+            提交并重新生成
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -145,6 +145,15 @@
 **处理**: 任一选择动作（setActiveNode / toggleSelectNode / setSelectedEdge）都在 store 内主动清空另两种状态
 **原因**: Delete 键根据"当前激活的选择类型"决定删除目标，若同时存在 active node 和 selected edge，行为定义不明确（按优先级解决会让用户困惑）
 
+## E019 · 编辑被分支引用的用户消息会破坏子分支继承上下文
+**场景**: 用户编辑父节点中 sequence=N 的 user 消息时，要删除 sequence ≥ N 的所有消息再重发。若任一子分支的 `inheritedUntilSequence ≥ N`，删除会让子分支再次发消息时拿到的"父链上下文"凭空缺失部分内容（assembleContextWithLimit 静默截短），LLM 看到残缺的对话历史
+**处理**:
+- 前端 UI 层先挡：`UserBubble` 编辑按钮检查 `selectIsMessageReferencedByBranch`，被引用时 disabled + tooltip 说明
+- 后端 API 兜底：`truncateMessages` 必查所有出边 branch，命中即抛 `MessageReferencedByBranchError`，HTTP 映射 409 `branch_referenced` + `childNodeIds` 列表（防竞态：用户编辑期间另一会话刚好创建分支引用了该消息）
+- 不级联删子分支：用户数据风险大，不能为方便编辑而删除其他节点
+- 不 silent 截短：违反 INV-3 引用语义
+**原因**: INV-3 保证的是"分支边截止 sequence 不可变"，但**不保证消息内容不可变**也不保证消息存在。任一对父节点 message 的破坏性操作都需要分支引用守卫——这是 R021 的核心动机
+
 ## E018 · 画布 transform 层内不能用 Element.scrollIntoView
 **场景**: 分支跳转时把目标消息滚到视口——目标消息在节点内的 `overflow:auto` 容器里，节点又是 `position:absolute` 嵌在画布的 `transform: translate+scale` 层下
 **处理**: 改为手动定位最近的 `overflow-y:auto/scroll` 祖先（节点的消息列表容器），用 `getBoundingClientRect` 计算相对偏移后调 `container.scrollTo({top, behavior:'smooth'})` 只滚它一个；遍历时校验 `scrollHeight > clientHeight` 避免误判未溢出的容器

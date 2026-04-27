@@ -148,6 +148,13 @@ export const api = {
     await consumeSSE(res.body, onEvent);
   },
 
+  // 截断式删除消息：删除 nodeId 节点中 sequence ≥ fromSequence 的所有 messages。
+  // 用户编辑用户消息时调用——后续 sendMessage 会用编辑后内容追加为新一轮。
+  // 守卫错误：409 streaming（节点流式中）/ 409 branch_referenced（消息被分支引用）
+  async truncateMessages(nodeId: string, fromSequence: number): Promise<{ deleted: number }> {
+    return request(`/nodes/${nodeId}/messages?fromSequence=${fromSequence}`, { method: 'DELETE' });
+  },
+
   async abortStream(nodeId: string): Promise<boolean> {
     if (isElectron && window.powerChat) {
       const r = await window.powerChat.request('POST', `/api/nodes/${nodeId}/messages/abort`);

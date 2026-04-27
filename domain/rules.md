@@ -149,6 +149,14 @@
 - 来源：DeepSeek 思考模式协议 / 用户 2026-04-26 报告
 - 最后确认：2026-04-26
 
+## R021 · 被分支引用的消息不可截断/编辑
+- 截断式删除消息（`truncateMessages(nodeId, fromSequence)`）必须先检查所有出边 branch 边
+- 任一出边 `inheritedUntilSequence ≥ fromSequence` → 拒绝操作，抛 `MessageReferencedByBranchError`，HTTP 映射 409 `branch_referenced`（response 带受影响子节点 id 列表）
+- 用户编辑用户消息时前端按钮先做 disabled 兜底（同语义判定），后端守卫防竞态
+- 不能"自动级联删除子分支"：删用户数据风险大；不能"silently 截短继承上下文"：违反 INV-3 的引用语义
+- 来源：用户 2026-04-27 提出消息编辑+重生成需求时的硬决策（方向 2c）
+- 最后确认：2026-04-27
+
 ## R020b · reasoningContent 段内 sub-turn 必须回传（agent loop 内部）
 - 段内语境（agent loop 内部多 sub-turn 之间，同一 user 之后到下一个 user 之前）：
   - **DeepSeek-Reasoner native_tools 模式 + enableReasoning=true + 有 tool_calls**：assistant 历史的 reasoning_content **必须**回传给所有后续段内调用，**不带 → 400 invalid_request_error**

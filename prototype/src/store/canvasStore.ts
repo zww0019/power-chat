@@ -38,6 +38,8 @@ interface CanvasActions {
   removeEdge: (id: string) => void;
   removeEdgesTouching: (nodeId: string) => void;
   upsertMessage: (msg: Message) => void;
+  // 删除指定节点中 sequence ≥ fromSequence 的所有消息（用户编辑触发的本地同步）
+  removeMessagesFromSequence: (nodeId: string, fromSequence: number) => void;
   appendMessageContent: (msgId: string, contentDelta: string, reasoningDelta?: string) => void;
   finalizeMessage: (msgId: string) => void;
   markMessageError: (msgId: string, errorText: string) => void;
@@ -156,6 +158,15 @@ export const useCanvasStore = create<Store>()(
 
       upsertMessage: (msg) =>
         set((s) => ({ messages: { ...s.messages, [msg.id]: msg } })),
+
+      removeMessagesFromSequence: (nodeId, fromSequence) =>
+        set((s) => ({
+          messages: Object.fromEntries(
+            Object.entries(s.messages).filter(
+              ([, m]) => !(m.nodeId === nodeId && m.sequence >= fromSequence),
+            ),
+          ),
+        })),
 
       appendMessageContent: (msgId, contentDelta, reasoningDelta) =>
         set((s) => {
@@ -323,6 +334,26 @@ export function selectBranchSourceOfNode(
   );
   if (!sourceMessage) return null;
   return { parentNode, sourceMessage };
+}
+
+/**
+ * 选择器：判断某节点的某条消息（按 sequence）是否被任一子分支引用。
+ * 编辑用户消息时用——若返回 true，编辑会破坏子分支继承上下文，按钮应禁用（2c 硬阻断）。
+ * 引用判定：存在某出边 branch 的 inheritedUntilSequence ≥ sequence
+ *（编辑该 sequence 意味着要删除 sequence 及之后的所有消息，等价于"截断范围 fromSequence=sequence"）。
+ */
+export function selectIsMessageReferencedByBranch(
+  state: CanvasState,
+  nodeId: string,
+  sequence: number,
+): boolean {
+  return Object.values(state.edges).some(
+    (e) =>
+      e.parentNodeId === nodeId &&
+      e.edgeKind === 'branch' &&
+      e.inheritedUntilSequence !== null &&
+      e.inheritedUntilSequence >= sequence,
+  );
 }
 
 /**

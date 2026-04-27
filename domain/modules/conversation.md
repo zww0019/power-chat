@@ -34,6 +34,13 @@
 - 子节点是新 dialogue 节点，messages 为空
 - 同一父节点同一消息可被多次分支，每次都产生独立子节点和独立 edge（无去重）
 
+## 截断式删除消息（用户编辑触发）
+- 用户编辑某条 user 消息提交后："删除该消息及之后所有消息 + 用编辑后内容走标准 sendMessage 重新触发 LLM"
+- 后端 `truncateMessages(nodeId, fromSequence)` 删除该节点 sequence ≥ fromSequence 的所有 messages
+- 三层守卫顺序：(a) 节点流式中拒绝（沿用 INV-7 思路，复用 StreamingNodeError）；(b) 被分支引用拒绝（R021）；(c) 实际删除（并行 delete）
+- sequence 由删除后剩余消息的"最大 + 1"接续——不覆盖旧 id，新 user 消息获得新 id 和新 sequence
+- 仅支持编辑 user 消息，不支持 assistant 消息编辑/重生成（v1 范围限定，避免重生成时 agentTrace/reasoningContent 等字段的语义复杂度）
+
 ## 与其他模块的关系
 - 上游：调 settings 取 llmModel/llmFastModel/thinkingModeEnabled
 - 上游：sendMessage 把 LLM 调用统一交给 agent.runAgentLoop（M2b 起，决策 6）；refine 仍直接调 streamChat（提炼任务不需要工具）
