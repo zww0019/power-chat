@@ -301,3 +301,48 @@ export function selectEdgesOfNode(state: CanvasState, nodeId: string): { inbound
     outbound: all.filter((e) => e.parentNodeId === nodeId),
   };
 }
+
+/**
+ * 选择器：子节点视角——取本节点 branch 入边对应的"分支源"信息。
+ * 用于在子节点头部展示"↳ 分支自《父标题》第 N 条..."。
+ * 数据回溯链：edge.parentNodeId → parentNode；edge.inheritedUntilSequence → sourceMessage（同 sequence）。
+ * 边、节点、消息任一缺失（异常状态）返回 null。
+ */
+export function selectBranchSourceOfNode(
+  state: CanvasState,
+  nodeId: string,
+): { parentNode: Node; sourceMessage: Message } | null {
+  const branchEdge = Object.values(state.edges).find(
+    (e) => e.childNodeId === nodeId && e.edgeKind === 'branch',
+  );
+  if (!branchEdge || branchEdge.inheritedUntilSequence === null) return null;
+  const parentNode = state.nodes[branchEdge.parentNodeId];
+  if (!parentNode) return null;
+  const sourceMessage = Object.values(state.messages).find(
+    (m) => m.nodeId === branchEdge.parentNodeId && m.sequence === branchEdge.inheritedUntilSequence,
+  );
+  if (!sourceMessage) return null;
+  return { parentNode, sourceMessage };
+}
+
+/**
+ * 选择器：父节点视角——取从本节点某条消息派生的所有子分支。
+ * 用于在父节点助手消息气泡上展示 "⑂ N" 徽章及子节点跳转列表。
+ * 仅返回 edge 与 child node 都存在的项；按 edge.createdAt 升序保持点击体验稳定。
+ */
+export function selectBranchesFromMessage(
+  state: CanvasState,
+  parentNodeId: string,
+  sequence: number,
+): Array<{ edge: Edge; childNode: Node }> {
+  return Object.values(state.edges)
+    .filter(
+      (e) =>
+        e.parentNodeId === parentNodeId &&
+        e.edgeKind === 'branch' &&
+        e.inheritedUntilSequence === sequence,
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((edge) => ({ edge, childNode: state.nodes[edge.childNodeId] }))
+    .filter((x): x is { edge: Edge; childNode: Node } => !!x.childNode);
+}

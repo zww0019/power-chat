@@ -1,8 +1,29 @@
-import { useCanvasStore, selectMessagesOfNode } from '../store/canvasStore';
+import { useCanvasStore, selectMessagesOfNode, selectBranchSourceOfNode } from '../store/canvasStore';
 import { api } from '../api/client';
-import type { Node as NodeType } from '../types';
+import type { Node as NodeType, Message } from '../types';
 import { NodeChatPanel } from './NodeChatPanel';
 import { performRetryRefine } from './nodeActions';
+
+// 摘要长度：折叠卡/header 横幅都用同一个值。25 字在 200/360px 宽度下能容纳一行不溢出
+const SOURCE_SUMMARY_MAX = 25;
+
+/**
+ * 把消息原文剥成"一行摘要"。剥离常见 markdown 噪音（标题/列表/引用/代码块标记/链接外壳），
+ * 折叠空白后截断；超长时在末尾接 "…"。仅用于来源标注的视觉摘要，不影响任何持久化数据。
+ */
+function summarizeMessage(content: string, maxLen: number = SOURCE_SUMMARY_MAX): string {
+  const stripped = content
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^[#>\-*]+\s*/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (stripped.length <= maxLen) return stripped;
+  return stripped.slice(0, maxLen) + '…';
+}
 
 interface NodeProps {
   node: NodeType;
@@ -108,6 +129,7 @@ function ExpandedNodeView({
 }: ExpandedNodeViewProps) {
   const updateNode = useCanvasStore((s) => s.updateNode);
   const openFullscreen = useCanvasStore((s) => s.openFullscreen);
+  const branchSource = useCanvasStore((s) => selectBranchSourceOfNode(s, node.id));
 
   const handleFold = () => {
     updateNode(node.id, { collapsed: true });
@@ -133,6 +155,13 @@ function ExpandedNodeView({
         onFold={handleFold}
         onOpenFullscreen={handleOpenFullscreen}
       />
+      {branchSource && (
+        <BranchSourceLine
+          parentNode={branchSource.parentNode}
+          sourceMessage={branchSource.sourceMessage}
+          variant="banner"
+        />
+      )}
       <NodeChatPanel node={node} isStreaming={isStreaming} mode="inline" />
     </div>
   );
@@ -263,13 +292,17 @@ function StatusBadge({ isStreaming, isActive }: { isStreaming: boolean; isActive
   return null;
 }
 
-// 折叠态对话节点（按文档 §2.1）：meta "对话 · N 轮" / title
+// 折叠态对话节点（按文档 §2.1）：meta "对话 · N 轮" / title / 可选"分支自..."来源行
 function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, messageCount, onPointerDownHeader }: CollapsedCardProps) {
   const roundCount = Math.max(0, Math.ceil(messageCount / 2));
   const title = node.title ?? '新节点';
+  const branchSource = useCanvasStore((s) => selectBranchSourceOfNode(s, node.id));
+  const hasSource = !!branchSource;
+  // 三行卡（多了来源行）需要更高的高度避免内容裁切
+  const cardHeight = hasSource ? 76 : 56;
   return (
     <div
-      style={{ ...styleBase, ...collapsedShellBase, width: 200, height: 56 }}
+      style={{ ...styleBase, ...collapsedShellBase, width: 200, height: cardHeight }}
       onPointerDown={(e) => onPointerDownHeader(e, node.id)}
     >
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>
@@ -280,6 +313,94 @@ function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, message
       <div style={{ fontSize: 13, fontWeight: 500, color: '#1e293b', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
         {title}
       </div>
+      {branchSource && (
+        <BranchSourceLine
+          parentNode={branchSource.parentNode}
+          sourceMessage={branchSource.sourceMessage}
+          variant="collapsed"
+        />
+      )}
+    </div>
+  );
+}
+
+interface BranchSourceLineProps {
+  parentNode: NodeType;
+  sourceMessage: Message;
+  // collapsed: 折叠卡内单行紧凑文本；banner: 展开态 header 下方的浅紫横幅
+  variant: 'collapsed' | 'banner';
+}
+
+/**
+ * 子节点视角的"分支来源"标注。
+ * 点击切换活跃节点到父节点（让用户能反向回到分支起源），并阻止冒泡防止触发拖拽。
+ * 同一组件支持折叠/展开两种视觉变体，避免双份样式漂移。
+ */
+// 阻止指针事件冒泡到拖拽层；不依赖任何组件状态，提升到模块级避免每次渲染重建
+function stopEventPropagation(e: React.PointerEvent) {
+  e.stopPropagation();
+}
+
+function BranchSourceLine({ parentNode, sourceMessage, variant }: BranchSourceLineProps) {
+  const setActiveNode = useCanvasStore((s) => s.setActiveNode);
+  const parentTitle = parentNode.title ?? '新节点';
+  const summary = summarizeMessage(sourceMessage.content);
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActiveNode(parentNode.id);
+  };
+
+  if (variant === 'collapsed') {
+    return (
+      <div
+        onPointerDown={stopEventPropagation}
+        onClick={handleClick}
+        title={`分支自《${parentTitle}》第 ${sourceMessage.sequence + 1} 条：${summary}`}
+        style={{
+          fontSize: 11,
+          color: '#6366f1',
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+          overflow: 'hidden',
+        }}
+      >
+        ↳ 分支自《{parentTitle}》
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onPointerDown={stopEventPropagation}
+      onClick={handleClick}
+      title="点击跳转到父节点"
+      style={{
+        padding: '6px 12px',
+        background: '#EEF2FF',
+        borderBottom: '0.5px solid #C7D2FE',
+        fontSize: 12,
+        color: '#4F46E5',
+        cursor: 'pointer',
+        display: 'flex',
+        gap: 6,
+        alignItems: 'baseline',
+      }}
+    >
+      <span style={{ flexShrink: 0 }}>↳ 分支自《{parentTitle}》第 {sourceMessage.sequence + 1} 条</span>
+      <span
+        style={{
+          flex: 1,
+          color: '#6366f1',
+          opacity: 0.8,
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+          overflow: 'hidden',
+          minWidth: 0,
+        }}
+      >
+        · {summary}
+      </span>
     </div>
   );
 }

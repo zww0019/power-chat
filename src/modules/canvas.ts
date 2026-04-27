@@ -168,3 +168,7 @@ export async function createEdge(params: {
 export async function getEdgesOfChild(childNodeId: string): Promise<Edge[]> {
   return getPersistence().list<Edge>('edges', (e) => e.childNodeId === childNodeId);
 }
+
+export async function getEdgesOfParent(parentNodeId: string): Promise<Edge[]> {
+  return getPersistence().list<Edge>('edges', (e) => e.parentNodeId === parentNodeId);
+}

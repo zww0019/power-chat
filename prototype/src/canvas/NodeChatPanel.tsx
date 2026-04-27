@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
-import { useCanvasStore, selectMessagesOfNode } from '../store/canvasStore';
+import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage } from '../store/canvasStore';
 import type { Node as NodeType, Message } from '../types';
 import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
@@ -284,7 +284,112 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
         <MarkdownContent content={message.content} isStreaming={isStreaming} />
         {isStreaming && <span style={{ color: '#6366f1', marginLeft: 2 }}>▍</span>}
       </div>
+      {message.status === 'complete' && (
+        <BranchBadge nodeId={message.nodeId} sequence={message.sequence} />
+      )}
       {showBranchControl && <BranchButton onBranch={onBranch} />}
+    </div>
+  );
+}
+
+// 父节点视角的"已派生 N 个分支"徽章。常驻显示（不依赖 hover），
+// 点击展开浮层列出所有子分支节点，点击条目切换活跃节点到该子节点。
+// 浮层用 popover 而非 tooltip，是因为同消息可能派生多条，需要让用户在多个目标间挑选。
+function BranchBadge({ nodeId, sequence }: { nodeId: string; sequence: number }) {
+  const branches = useCanvasStore((s) => selectBranchesFromMessage(s, nodeId, sequence));
+  const setActiveNode = useCanvasStore((s) => s.setActiveNode);
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 浮层打开时监听全局 pointerdown，点击容器外即关闭——避免遮挡画布操作
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: PointerEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handler);
+    return () => document.removeEventListener('pointerdown', handler);
+  }, [open]);
+
+  if (branches.length === 0) return null;
+
+  return (
+    <div
+      ref={containerRef}
+      style={{ position: 'absolute', left: 0, bottom: -8 }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        title={`已派生 ${branches.length} 个分支`}
+        style={{
+          fontSize: 11,
+          color: '#6366f1',
+          background: '#EEF2FF',
+          border: '1px solid #c7d2fe',
+          padding: '2px 8px',
+          borderRadius: 12,
+          cursor: 'pointer',
+          fontWeight: 500,
+        }}
+      >
+        ⑂ {branches.length}
+      </button>
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            bottom: 28,
+            minWidth: 180,
+            maxWidth: 260,
+            background: '#ffffff',
+            border: '1px solid #c7d2fe',
+            borderRadius: 6,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+            padding: 4,
+            zIndex: 10,
+          }}
+        >
+          <div style={{ fontSize: 10, color: '#94a3b8', padding: '4px 8px' }}>
+            派生分支（{branches.length}）
+          </div>
+          {branches.map(({ edge, childNode }) => (
+            <button
+              key={edge.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveNode(childNode.id);
+                setOpen(false);
+              }}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                background: 'transparent',
+                border: 'none',
+                padding: '6px 8px',
+                borderRadius: 4,
+                fontSize: 12,
+                color: '#1e293b',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                textOverflow: 'ellipsis',
+                overflow: 'hidden',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#F5F3FF')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              ↳ {childNode.title ?? '新节点'}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

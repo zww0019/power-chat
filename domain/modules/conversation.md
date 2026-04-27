@@ -26,11 +26,13 @@
 - 用 `settings.llmFastModel ?? settings.llmModel`，max_tokens=30 / temperature=0.2
 - 失败静默（E008），不影响主流程
 - 成功通过 SSE 'title' 事件推送给前端，前端 store 同步更新
+- **事件顺序硬约束**：title 事件必须在 'done' 之前 yield。客户端（client.ts runStream）收到 done 即 unsubscribe，trailing 事件会被 IPC 路径丢弃；done 必须是流的最后一个事件
 
 ## 分支动作
-- 子节点位置：父节点右侧偏移 +440px
+- 子节点位置：父节点右侧偏移 +440px；同父节点已有 N 个 branch 出边时，新子节点 Y 向下错开 N×单位偏移，避免多次"从这里分支"在画布上完全堆叠
 - 分支边的 inheritedUntilSequence 写入 fromMsg.sequence，不可变（INV-3）
 - 子节点是新 dialogue 节点，messages 为空
+- 同一父节点同一消息可被多次分支，每次都产生独立子节点和独立 edge（无去重）
 
 ## 与其他模块的关系
 - 上游：调 settings 取 llmModel/llmFastModel/thinkingModeEnabled

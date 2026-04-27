@@ -23,14 +23,18 @@ async function setupParentWithMessage(): Promise<{ parent: any; assistantMsgId: 
   return { parent, assistantMsgId: done.messageId };
 }
 
+async function createBranch(parentNodeId: string, fromMessageId: string): Promise<any> {
+  return api<any>('/api/nodes/branch', {
+    method: 'POST',
+    body: JSON.stringify({ parentNodeId, fromMessageId }),
+    expectStatus: 201,
+  });
+}
+
 describe('conversation: 分支动作', () => {
   it('返回 201 + {node, edge}，edge.edgeKind === branch', async () => {
     const { parent, assistantMsgId } = await setupParentWithMessage();
-    const result = await api<any>('/api/nodes/branch', {
-      method: 'POST',
-      body: JSON.stringify({ parentNodeId: parent.id, fromMessageId: assistantMsgId }),
-      expectStatus: 201,
-    });
+    const result = await createBranch(parent.id, assistantMsgId);
     expect(result.node.type).toBe('dialogue');
     expect(result.edge.edgeKind).toBe('branch');
     expect(result.edge.parentNodeId).toBe(parent.id);
@@ -40,32 +44,36 @@ describe('conversation: 分支动作', () => {
   it('Edge.inheritedUntilSequence 写入父节点 fromMessage 的 sequence（INV-3）', async () => {
     const { parent, assistantMsgId } = await setupParentWithMessage();
     // assistant 消息 sequence 应为 1（user=0, assistant=1）
-    const result = await api<any>('/api/nodes/branch', {
-      method: 'POST',
-      body: JSON.stringify({ parentNodeId: parent.id, fromMessageId: assistantMsgId }),
-      expectStatus: 201,
-    });
+    const result = await createBranch(parent.id, assistantMsgId);
     expect(result.edge.inheritedUntilSequence).toBe(1);
   });
 
   it('分支节点位置在父节点右侧偏移', async () => {
     const { parent, assistantMsgId } = await setupParentWithMessage();
-    const result = await api<any>('/api/nodes/branch', {
-      method: 'POST',
-      body: JSON.stringify({ parentNodeId: parent.id, fromMessageId: assistantMsgId }),
-      expectStatus: 201,
-    });
+    const result = await createBranch(parent.id, assistantMsgId);
     expect(result.node.positionX).toBeGreaterThan(parent.positionX);
+  });
+
+  it('同父节点多次分支时 Y 坐标递增错开，避免画布堆叠', async () => {
+    const { parent, assistantMsgId } = await setupParentWithMessage();
+    const r1 = await createBranch(parent.id, assistantMsgId);
+    const r2 = await createBranch(parent.id, assistantMsgId);
+    const r3 = await createBranch(parent.id, assistantMsgId);
+    // 三次分支 Y 应等差递增（N * 偏移量），保证位置算法是规整可预期的；
+    // 不写死偏移量数值（避免与 BRANCH_Y_OFFSET 调参时同步改测试），只断言等差关系
+    expect(r1.node.positionY).toBe(parent.positionY);
+    const step = r2.node.positionY - r1.node.positionY;
+    expect(step).toBeGreaterThan(0);
+    expect(r3.node.positionY - r2.node.positionY).toBe(step);
+    // X 方向所有分支保持一致（仅 Y 错开）
+    expect(r1.node.positionX).toBe(r2.node.positionX);
+    expect(r2.node.positionX).toBe(r3.node.positionX);
   });
 
   it('支持多层深度分支，无 4 层限制（PRD-FIX-2）', async () => {
     let { parent: current, assistantMsgId } = await setupParentWithMessage();
     for (let i = 0; i < 6; i++) {
-      const result = await api<any>('/api/nodes/branch', {
-        method: 'POST',
-        body: JSON.stringify({ parentNodeId: current.id, fromMessageId: assistantMsgId }),
-        expectStatus: 201,
-      });
+      const result = await createBranch(current.id, assistantMsgId);
       // 在新分支节点上发消息，准备下一轮
       const events = await consumeSSE(`/api/nodes/${result.node.id}/messages`, {
         method: 'POST',

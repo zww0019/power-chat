@@ -256,6 +256,9 @@ const TITLE_SYSTEM_PROMPT = `你是一个文本概括助手。
 - 中文输出。`;
 
 // === 分支动作 ===
+// 80px：折叠态节点高度上限约 60px，留 20px 视觉间距，使多次分支产生的子节点不互相遮挡
+const BRANCH_Y_OFFSET = 80;
+
 export async function branchNode(params: {
   parentNodeId: string;
   fromMessageId: string;
@@ -270,10 +273,13 @@ export async function branchNode(params: {
     throw new Error(`fromMessageId not found in parent: ${params.fromMessageId}`);
   }
 
-  // 子节点位置：父节点右侧偏移
+  // 已有兄弟分支数决定 Y 错开量（第 N+1 个子节点落在父节点下方 N * BRANCH_Y_OFFSET 处）
+  const siblingBranchCount = (await canvas.getEdgesOfParent(params.parentNodeId)).filter(
+    (e) => e.edgeKind === 'branch',
+  ).length;
   const childNode = await canvas.createNode({
     positionX: parent.positionX + 440,
-    positionY: parent.positionY,
+    positionY: parent.positionY + siblingBranchCount * BRANCH_Y_OFFSET,
     type: 'dialogue',
   });
 
