@@ -136,6 +136,46 @@ function findStreamingNodeId(store: ReturnType<typeof useCanvasStore.getState>):
   return null;
 }
 
+/**
+ * 跨节点跳转并定位到某条消息——分支双向标注的"一键回到来源"行为。
+ *
+ * 完整动作：(1) 若节点折叠则展开（store + 后端持久化）；(2) 设为活跃节点；
+ * (3) pan 画布让节点中心进入视口中央；(4) 等两帧后用 data-message-id 锚点滚动到该消息。
+ *
+ * 两帧延迟的原因：折叠→展开会触发 React 重新挂载 ExpandedNodeView，
+ * 第一帧只完成 commit 还没 layout，DOM 选择器拿到的是新挂载但尚未布局的元素，
+ * scrollIntoView 计算出错位的偏移。两层 rAF 确保 layout 完成后再滚动。
+ *
+ * messageId 传 null 时跳过滚动（用于子节点无消息的早期场景）；找不到 DOM 锚点时静默 return。
+ */
+export function focusNodeOnMessage(targetNodeId: string, messageId: string | null): void {
+  const store = useCanvasStore.getState();
+  const node = store.nodes[targetNodeId];
+  if (!node) return;
+
+  if (node.collapsed) {
+    store.updateNode(targetNodeId, { collapsed: false });
+    api.updateNode(targetNodeId, { collapsed: false }).catch(() => {});
+  }
+  store.setActiveNode(targetNodeId);
+
+  // 画布 pan 居中：复用 Minimap 的 centerOn 公式（vx = winW/2 - lx*zoom）
+  // 取节点中心点（展开态宽 360，高度动态——用 positionY + 半个常见高度做近似中心）
+  const zoom = store.canvas?.viewportZoom ?? 1;
+  const lx = node.positionX + 180;
+  const ly = node.positionY + 120;
+  store.setViewport(window.innerWidth / 2 - lx * zoom, window.innerHeight / 2 - ly * zoom, zoom);
+
+  if (messageId) {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-message-id="${messageId}"]`);
+        if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    });
+  }
+}
+
 /** 从节点的某条 AI 消息分支出新对话节点。 */
 export async function performBranch(parentNodeId: string, fromMessageId: string): Promise<void> {
   try {

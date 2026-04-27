@@ -2,7 +2,7 @@ import { useCanvasStore, selectMessagesOfNode, selectBranchSourceOfNode } from '
 import { api } from '../api/client';
 import type { Node as NodeType, Message } from '../types';
 import { NodeChatPanel } from './NodeChatPanel';
-import { performRetryRefine } from './nodeActions';
+import { performRetryRefine, focusNodeOnMessage } from './nodeActions';
 
 // 摘要长度：折叠卡/header 横幅都用同一个值。25 字在 200/360px 宽度下能容纳一行不溢出
 const SOURCE_SUMMARY_MAX = 25;
@@ -333,7 +333,8 @@ interface BranchSourceLineProps {
 
 /**
  * 子节点视角的"分支来源"标注。
- * 点击切换活跃节点到父节点（让用户能反向回到分支起源），并阻止冒泡防止触发拖拽。
+ * 点击调 focusNodeOnMessage：展开父节点（如折叠）+ 设为活跃 + pan 画布到节点 + 滚动到对应消息开头。
+ * 让用户能"一键回到分支起源"而不只是把父节点设为活跃。
  * 同一组件支持折叠/展开两种视觉变体，避免双份样式漂移。
  */
 // 阻止指针事件冒泡到拖拽层；不依赖任何组件状态，提升到模块级避免每次渲染重建
@@ -342,12 +343,11 @@ function stopEventPropagation(e: React.PointerEvent) {
 }
 
 function BranchSourceLine({ parentNode, sourceMessage, variant }: BranchSourceLineProps) {
-  const setActiveNode = useCanvasStore((s) => s.setActiveNode);
   const parentTitle = parentNode.title ?? '新节点';
   const summary = summarizeMessage(sourceMessage.content);
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setActiveNode(parentNode.id);
+    focusNodeOnMessage(parentNode.id, sourceMessage.id);
   };
 
   if (variant === 'collapsed') {

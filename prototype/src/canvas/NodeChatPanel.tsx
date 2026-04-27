@@ -4,7 +4,7 @@ import type { Node as NodeType, Message } from '../types';
 import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
 import { AgentTrace } from './AgentTrace';
-import { performSendMessage, performBranch, performAbort } from './nodeActions';
+import { performSendMessage, performBranch, performAbort, focusNodeOnMessage } from './nodeActions';
 
 // inline：节点展开态内嵌（高度上限 480px，宽度跟随 360px 节点）；
 // fullscreen：大屏 Modal（高度 flex 占满 Modal 内容区，宽度由 Modal 容器决定）。
@@ -185,7 +185,7 @@ function MessageBubble({ message, onBranch, mode }: BubbleProps) {
   const fontSize = mode === 'fullscreen' ? 14 : 13;
   const maxWidth = mode === 'fullscreen' ? '78%' : '94%';
   if (message.role === 'user') {
-    return <UserBubble content={message.content} fontSize={fontSize} maxWidth={maxWidth} />;
+    return <UserBubble messageId={message.id} content={message.content} fontSize={fontSize} maxWidth={maxWidth} />;
   }
   return (
     <AssistantBubble
@@ -197,9 +197,9 @@ function MessageBubble({ message, onBranch, mode }: BubbleProps) {
   );
 }
 
-function UserBubble({ content, fontSize, maxWidth }: { content: string; fontSize: number; maxWidth: string }) {
+function UserBubble({ messageId, content, fontSize, maxWidth }: { messageId: string; content: string; fontSize: number; maxWidth: string }) {
   return (
-    <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+    <div data-message-id={messageId} style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
       <div
         style={{
           maxWidth,
@@ -251,6 +251,7 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
 
   return (
     <div
+      data-message-id={message.id}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -297,7 +298,6 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
 // 浮层用 popover 而非 tooltip，是因为同消息可能派生多条，需要让用户在多个目标间挑选。
 function BranchBadge({ nodeId, sequence }: { nodeId: string; sequence: number }) {
   const branches = useCanvasStore((s) => selectBranchesFromMessage(s, nodeId, sequence));
-  const setActiveNode = useCanvasStore((s) => s.setActiveNode);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -364,7 +364,14 @@ function BranchBadge({ nodeId, sequence }: { nodeId: string; sequence: number })
               key={edge.id}
               onClick={(e) => {
                 e.stopPropagation();
-                setActiveNode(childNode.id);
+                // 跳子节点定位到它的"分支起点"——sequence=0 的第一条消息（通常是 user 首问）；
+                // 子节点尚无消息时传 null，focusNodeOnMessage 跳过滚动只展开 + pan。
+                // 通过 getState() 按需读取避免订阅整个 messages 字典导致任意消息更新都重渲 BranchBadge
+                const allMessages = useCanvasStore.getState().messages;
+                const firstMsg = Object.values(allMessages)
+                  .filter((m) => m.nodeId === childNode.id)
+                  .sort((a, b) => a.sequence - b.sequence)[0];
+                focusNodeOnMessage(childNode.id, firstMsg?.id ?? null);
                 setOpen(false);
               }}
               style={{
