@@ -335,17 +335,36 @@ function extractTitleErrorCode(msg: string): string {
   return 'unknown';
 }
 
-/** 从节点的某条 AI 消息分支出新对话节点。 */
+/**
+ * 从节点的某条 AI 消息分支出新对话节点。
+ *
+ * 一键直达大屏对话框（用户原诉求："不想被打断对话情境"）：
+ * 创建成功后直接把新节点装入大屏 Modal，无论分支动作来自 fullscreen 还是 inline 入口，
+ * 落点都统一为新节点的大屏对话框——用户视觉上是"在大窗口里基于一句话开了个新对话"，
+ * 输入框由 NodeChatPanel 的 fullscreen 聚焦逻辑自动获焦，可以立即打字。
+ *
+ * 动作清单：
+ * 1) upsertNode/upsertEdge：写入 store。collapsed 字段沿用后端默认值，
+ *    新节点直接进 Modal，画布上是否折叠不影响 Modal 内容渲染。
+ * 2) openFullscreen：单例字段直接覆盖父节点 fullscreenNodeId，
+ *    用户从 fullscreen 入口分支时是"对话内容切换"，不是关再开；
+ *    openFullscreen 同时写 activeNodeId，无需再单独调 setActiveNode。
+ * 3) 视口平移：让用户 ESC 关闭 Modal 后回到画布时，新节点已在视野中央。
+ *    公式与 focusNodeOnMessage 一致（节点中心 = positionX+180, positionY+120）。
+ *
+ * 错误处理：抛错给调用方（AssistantBubble 的 handleBranchClick 会 try/finally 清 loading）。
+ * 不在此处吞错——否则 UI 永远看不到失败原因。
+ */
 export async function performBranch(parentNodeId: string, fromMessageId: string): Promise<void> {
-  try {
-    const { node, edge } = await api.branchNode({ parentNodeId, fromMessageId });
-    const store = useCanvasStore.getState();
-    store.upsertNode(node);
-    store.upsertEdge(edge);
-    store.setActiveNode(node.id);
-  } catch (e) {
-    console.error('branch failed', e);
-  }
+  const { node, edge } = await api.branchNode({ parentNodeId, fromMessageId });
+  const store = useCanvasStore.getState();
+  store.upsertNode(node);
+  store.upsertEdge(edge);
+  store.openFullscreen(node.id);
+  const zoom = store.canvas?.viewportZoom ?? 1;
+  const nodeCenterX = node.positionX + 180;
+  const nodeCenterY = node.positionY + 120;
+  store.setViewport(window.innerWidth / 2 - nodeCenterX * zoom, window.innerHeight / 2 - nodeCenterY * zoom, zoom);
 }
 
 /**

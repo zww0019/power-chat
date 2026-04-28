@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
-import { Pencil, Copy, GitBranch, Info, ChevronDown, ChevronRight, Brain, CornerDownRight } from 'lucide-react';
+import { Pencil, Copy, GitBranch, Info, ChevronDown, ChevronRight, Brain, CornerDownRight, Loader2 } from 'lucide-react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage, selectIsMessageReferencedByBranch } from '../store/canvasStore';
 import { toast } from '../store/toastStore';
 import type { Node as NodeType, Message } from '../types';
@@ -7,6 +7,7 @@ import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
 import { AgentTrace } from './AgentTrace';
 import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, performEditMessage } from './nodeActions';
+import { useStickyBottom } from './useStickyBottom';
 import { color, text, space, radius, shadow, motion } from '../styles/theme';
 
 // inline：节点展开态内嵌（高度上限 480px，宽度跟随 360px 节点）；
@@ -126,12 +127,19 @@ export function NodeChatPanel({ node, isStreaming, mode }: NodeChatPanelProps) {
 
   const handleActivate = useCallback(() => setActiveNode(node.id), [setActiveNode, node.id]);
 
-  // fullscreen 模式打开后焦点直接进输入框；inline 模式由原 ExpandedNodeView 控制
+  // fullscreen 模式打开后焦点直接进输入框；inline 模式由原 ExpandedNodeView 控制（不抢焦点）。
+  // 依赖 node.id：performBranch 触发 openFullscreen 切换 fullscreenNodeId 时，NodeFullscreenModal
+  // 内部不重新挂载本组件（无 key），effect 默认不会重跑。把 node.id 纳入依赖让节点切换时重新聚焦，
+  // 否则用户在大屏 Modal 内分支后焦点会停留在上一节点（组件实例复用，textarea DOM 未重建，
+  // focus 状态停在原位），新节点的输入框不会自动获焦。
+  // rAF 兜底首帧时序：openFullscreen 与 textarea commit 之间可能有微妙时序，rAF 让 commit 完成后再读 ref。
   useEffect(() => {
-    if (mode === 'fullscreen' && !isStreaming && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [mode, isStreaming]);
+    if (isStreaming || mode !== 'fullscreen') return;
+    const id = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [mode, isStreaming, node.id]);
 
   const handleSend = async () => {
     const textContent = draft.trim();
@@ -150,7 +158,7 @@ export function NodeChatPanel({ node, isStreaming, mode }: NodeChatPanelProps) {
   return (
     <>
       {isRefined ? (
-        <RefinedNodeBody messages={messages} onActivate={handleActivate} mode={mode} />
+        <RefinedNodeBody nodeId={node.id} messages={messages} onActivate={handleActivate} mode={mode} />
       ) : (
         <DialogueNodeBody node={node} messages={messages} onActivate={handleActivate} mode={mode} />
       )}
@@ -186,24 +194,48 @@ function bodyContainerStyle(mode: ChatMode, padding: string): React.CSSPropertie
   return { padding, maxHeight: 480, overflowY: 'auto' };
 }
 
-function RefinedNodeBody({ messages, onActivate, mode }: { messages: Message[]; onActivate: () => void; mode: ChatMode }) {
+function RefinedNodeBody({ nodeId, messages, onActivate, mode }: { nodeId: string; messages: Message[]; onActivate: () => void; mode: ChatMode }) {
+  // 提炼节点支持追问（用户可在提炼结果下继续发消息），追问后 messages 末尾会追加 user 轮，
+  // 因此不能直接取最后一条，必须反向遍历跳过追问才能找到最新的 assistant 消息。
   let lastAssistant: Message | null = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]!.role === 'assistant') { lastAssistant = messages[i]!; break; }
   }
+  // 提炼节点流式增量可能落在 content / reasoningContent / agentTrace 三个字段任意一个。
+  const stickySignal = `${lastAssistant?.content?.length ?? 0}:${lastAssistant?.reasoningContent?.length ?? 0}:${lastAssistant?.agentTrace?.length ?? 0}`;
+  // resetKey：本节点是否处于大屏态。inline ↔ fullscreen 切换时 inline 侧组件不卸载，
+  // 需主动通过 resetKey 把 sticky 翻回 true（fullscreen 侧每次新挂载，天然 true）。
+  const isThisNodeFullscreen = useCanvasStore((s) => s.fullscreenNodeId === nodeId);
+  const { containerRef, onScroll } = useStickyBottom<HTMLDivElement>(stickySignal, { resetKey: isThisNodeFullscreen });
   return (
-    <div style={bodyContainerStyle(mode, '0')} onClick={onActivate} onWheel={mode === 'inline' ? handleNodeWheel : undefined}>
+    <div
+      ref={containerRef}
+      style={bodyContainerStyle(mode, '0')}
+      onClick={onActivate}
+      onWheel={mode === 'inline' ? handleNodeWheel : undefined}
+      onScroll={onScroll}
+    >
       <RefinedContent message={lastAssistant} />
     </div>
   );
 }
 
 function DialogueNodeBody({ node, messages, onActivate, mode }: { node: NodeType; messages: Message[]; onActivate: () => void; mode: ChatMode }) {
+  // 流式增量信号：消息数 + 末条消息的可变字段长度。SSE 每帧追加 content / reasoningContent
+  // / agentTrace 任意一项都会改变此字符串，触发 useStickyBottom 内部 effect 调度置底。
+  const last = messages[messages.length - 1];
+  const stickySignal = `${messages.length}:${last?.content?.length ?? 0}:${last?.reasoningContent?.length ?? 0}:${last?.agentTrace?.length ?? 0}`;
+  // resetKey：本节点是否处于大屏态。inline ↔ fullscreen 切换时 inline 侧组件不卸载，
+  // 需主动通过 resetKey 把 sticky 翻回 true（fullscreen 侧每次新挂载，天然 true）。
+  const isThisNodeFullscreen = useCanvasStore((s) => s.fullscreenNodeId === node.id);
+  const { containerRef, onScroll } = useStickyBottom<HTMLDivElement>(stickySignal, { resetKey: isThisNodeFullscreen });
   return (
     <div
+      ref={containerRef}
       style={bodyContainerStyle(mode, mode === 'fullscreen' ? `${space.s5}px ${space.s7}px` : `${space.s4}px ${space.s4}px`)}
       onClick={onActivate}
       onWheel={mode === 'inline' ? handleNodeWheel : undefined}
+      onScroll={onScroll}
     >
       {messages.length === 0 && (
         <div style={{ color: color.ink400, fontSize: text.sm, fontStyle: 'italic', padding: `${space.s2}px 0` }}>
@@ -291,7 +323,9 @@ function NodeFooter({ isRefined, isStreaming, draft, setDraft, handleKeyDown, on
 
 interface BubbleProps {
   message: Message;
-  onBranch: () => void;
+  // 返回 Promise 以便 AssistantBubble 在 await 期间显示 loading 态。
+  // performBranch 在新版中向上抛错，由这里的 try/finally 兜底清理 loading。
+  onBranch: () => Promise<void>;
   mode: ChatMode;
 }
 
@@ -498,7 +532,7 @@ function UserBubbleEditor({ messageId, draft, setDraft, onSubmit, onCancel, font
 
 interface AssistantBubbleProps {
   message: Message;
-  onBranch: () => void;
+  onBranch: () => Promise<void>;
   fontSize: number;
   maxWidth: string;
 }
@@ -509,9 +543,25 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
   const [hover, setHover] = useState(false);
   const [hoverDelayElapsed, setHoverDelayElapsed] = useState(false);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  // 分支按钮的 loading 态：API 同步等待（创建节点 + 边）期间锁住按钮防重入并切换图标，
+  // 让用户立即知道点击已被接收。失败时 toast 提示后解锁，避免用户对着失败按钮反复点。
+  const [branching, setBranching] = useState(false);
   const hasBranches = useCanvasStore(
     (s) => selectBranchesFromMessage(s, message.nodeId, message.sequence).length > 0,
   );
+
+  const handleBranchClick = async () => {
+    if (branching) return;
+    setBranching(true);
+    try {
+      await onBranch();
+    } catch (e) {
+      console.error('branch failed', e);
+      toast.error(`分支创建失败：${(e as Error).message ?? e}`);
+    } finally {
+      setBranching(false);
+    }
+  };
 
   useEffect(() => {
     if (!hover) {
@@ -606,8 +656,18 @@ function AssistantBubble({ message, onBranch, fontSize, maxWidth }: AssistantBub
           <ToolbarIconButton onClick={handleCopy} title="复制此消息原文（保留 markdown）">
             <Copy size={13} strokeWidth={1.8} />
           </ToolbarIconButton>
-          <ToolbarIconButton onClick={onBranch} title="从这里分支（基于此消息创建子节点）">
-            <GitBranch size={13} strokeWidth={1.8} />
+          <ToolbarIconButton
+            onClick={handleBranchClick}
+            disabled={branching}
+            title={branching ? '正在创建分支…' : '从这里分支（基于此消息创建子节点）'}
+          >
+            {branching ? (
+              <span style={{ display: 'inline-flex', animation: 'spin 1s linear infinite' }}>
+                <Loader2 size={13} strokeWidth={1.8} />
+              </span>
+            ) : (
+              <GitBranch size={13} strokeWidth={1.8} />
+            )}
           </ToolbarIconButton>
           {hasBranches && (
             <BranchBadgeButton
