@@ -52,6 +52,13 @@
 - sequence 由删除后剩余消息的"最大 + 1"接续——不覆盖旧 id，新 user 消息获得新 id 和新 sequence
 - 仅支持编辑 user 消息，不支持 assistant 消息编辑/重生成（v1 范围限定，避免重生成时 agentTrace/reasoningContent 等字段的语义复杂度）
 
+## 消息 ID 同步语义（前后端独立生成 + SSE 回填）
+- 前端 / 后端各自生成消息 ID：前端发送时乐观写入 store 占位（让 UI 立即显示 user 消息和 assistant 流式光标），后端持久化时另行生成不同格式的真实 ID
+- 两端 ID 永远不一致；后端必须通过 SSE 把真实 ID 回填给前端，前端把 store 里的占位 ID 替换成真实 ID，否则后续 branch / edit 等按 ID 查后端的操作会 404
+- user 消息真实 ID 通过 `user_persisted` 事件下发，必须在第一帧 reasoning / content 之前 yield（保证用户在 AI 还在流式时点分支也能用真实 ID）
+- assistant 消息真实 ID 通过 `done` 事件的 messageId 字段下发，前端在 done 到达时先替换 ID 再标记 complete
+- ID 替换不影响其他 store 字段：分支边的 inheritedUntilSequence 按 sequence 持有（不引用 messageId），节点流式状态按 nodeId 持有
+
 ## AI 消息复制（仅前端能力）
 - assistant 气泡 hover 80ms 后左下浮出 `MessageToolbar`，工具栏内含 `📋`（复制）/ `↳`（从这里分支）/ `⑂N`（已派生分支时显示，点击展开浮层）三项 icon 按钮
 - user 气泡同样 hover 80ms，右下浮出工具栏，仅含 `✎`（编辑）一项

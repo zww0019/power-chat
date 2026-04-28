@@ -70,24 +70,53 @@ describe('conversation: 节点内消息发送', () => {
     expect((firstAsst.reasoningContent ?? '').length).toBeGreaterThan(0);
   });
 
+  it('SSE 流包含 user_persisted 事件，messageId 与持久化 user 消息 id 一致', async () => {
+    // 协议契约：前端乐观生成的 user 消息 ID 与后端独立生成的真实 ID 不同。
+    // 后端必须在持久化 user 后 yield user_persisted 事件下发真实 ID，否则用户对刚发的消息发起
+    // branch 时前端传入的乐观 ID 在后端查不到 → 400 fromMessageId not found in parent。
+    const node = await createNode();
+    const events = await sendMessage(node.id, '阻力');
+    const userPersisted = events.find((e) => e.type === 'user_persisted') as { messageId: string } | undefined;
+    expect(userPersisted).toBeDefined();
+    expect(typeof userPersisted!.messageId).toBe('string');
+    const snap = await api<any>('/api/canvas');
+    const userMsg = snap.messages.find((m: any) => m.role === 'user' && m.nodeId === node.id);
+    expect(userMsg.id).toBe(userPersisted!.messageId);
+  });
+
+  it('user_persisted 事件出现在第一个 content / reasoning 增量之前', async () => {
+    // 顺序约束：前端在收到 user_persisted 后才把 store 中的乐观 user ID 替换为真实 ID。
+    // 若 reasoning / content 增量先到达而 user_persisted 滞后，对应窗口期内任何 branch 调用
+    // 都会失败——本断言保证后端不会颠倒该顺序。
+    const node = await createNode();
+    const events = await sendMessage(node.id, '阻力');
+    const types = events.map((e) => e.type);
+    const userIdx = types.indexOf('user_persisted');
+    const firstDeltaIdx = types.findIndex((t) => t === 'content' || t === 'reasoning');
+    expect(userIdx).toBeGreaterThanOrEqual(0);
+    expect(firstDeltaIdx).toBeGreaterThanOrEqual(0);
+    expect(userIdx).toBeLessThan(firstDeltaIdx);
+  });
+
   it.skip('上下文超长时返回 413 + ContextOverflowError', async () => {
     // 模拟方式：连续提交超长消息直到累计估算超过 80%。
     // 当前 mock 模式 chunk size 小，需特殊 fixture 触发——延后到 Stage 7
   });
 });
 
-describe('conversation: 标题自动生成（D006 / R012）', () => {
-  it('每 3 轮对话后异步触发标题生成，SSE 推送 title 事件并持久化到 node.title', async () => {
+describe('conversation: 标题双轨制（D006 / R012）', () => {
+  it('自动轨：每 3 轮（6 条 message）触发一次，第 3 轮 SSE 流含 title 事件并持久化', async () => {
     const node = await createNode();
 
-    // 发 3 轮（每轮 user+assistant 共 2 条 message，3 轮共 6 条，命中节流 6 % 6 === 0）
-    let lastEvents: Array<{ type: string; [k: string]: unknown }> = [];
-    for (let i = 0; i < 3; i++) {
-      lastEvents = await sendMessage(node.id, `第${i + 1}问 — 关于供应链`);
-    }
+    // 第 1、2 轮不触发（messages 数 = 2、4，不命中 % 6 === 0）
+    const r1 = await sendMessage(node.id, '第1问 — 关于供应链');
+    expect(r1.find((e) => e.type === 'title')).toBeUndefined();
+    const r2 = await sendMessage(node.id, '第2问 — 关于供应链');
+    expect(r2.find((e) => e.type === 'title')).toBeUndefined();
 
-    // 第 3 轮的 SSE 流应包含 title 事件
-    const titleEvent = lastEvents.find((e) => e.type === 'title');
+    // 第 3 轮（messages 数 = 6，命中触发条件）
+    const r3 = await sendMessage(node.id, '第3问 — 关于供应链');
+    const titleEvent = r3.find((e) => e.type === 'title');
     expect(titleEvent).toBeDefined();
     expect(titleEvent!.nodeId).toBe(node.id);
     expect(typeof titleEvent!.title).toBe('string');
@@ -100,9 +129,52 @@ describe('conversation: 标题自动生成（D006 / R012）', () => {
     expect(updated.title.length).toBeLessThanOrEqual(30);
   });
 
-  it('第 1、2 轮对话不触发标题更新（节流未命中）', async () => {
+  it('主动轨：POST /api/nodes/:id/regenerate-title 成功返回标题并持久化', async () => {
     const node = await createNode();
-    const events = await sendMessage(node.id, '初始问题');
-    expect(events.find((e) => e.type === 'title')).toBeUndefined();
+    await sendMessage(node.id, '中国新茶饮品牌出海有哪些主要阻力？');
+
+    const result = await api<{ title: string }>(`/api/nodes/${node.id}/regenerate-title`, {
+      method: 'POST',
+    });
+    expect(typeof result.title).toBe('string');
+    expect(result.title.length).toBeGreaterThan(0);
+    expect(result.title.length).toBeLessThanOrEqual(30);
+
+    const snap = await api<any>('/api/canvas');
+    const updated = snap.nodes.find((x: any) => x.id === node.id);
+    expect(updated.title).toBe(result.title);
+  });
+
+  it('主动轨：对空节点（无消息）调用返回 400 empty_node', async () => {
+    const node = await createNode();
+    const res = await fetch(`${BASE_URL}/api/nodes/${node.id}/regenerate-title`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('empty_node');
+  });
+
+  it('主动轨：对不存在节点调用返回 404 not_found', async () => {
+    const res = await fetch(`${BASE_URL}/api/nodes/no_such_node/regenerate-title`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('not_found');
+  });
+
+  it('主动轨：多次调用永远强制重新生成（不依赖 node.title 是否已有值）', async () => {
+    const node = await createNode();
+    await sendMessage(node.id, '关于供应链的问题');
+    const first = await api<{ title: string }>(`/api/nodes/${node.id}/regenerate-title`, {
+      method: 'POST',
+    });
+    expect(first.title).toBeTruthy();
+    // 再次调用应当再次成功（验证：用户主动意图永远成立，不卡 node.title 已有值的判断）
+    const second = await api<{ title: string }>(`/api/nodes/${node.id}/regenerate-title`, {
+      method: 'POST',
+    });
+    expect(second.title).toBeTruthy();
   });
 });

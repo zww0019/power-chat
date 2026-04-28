@@ -145,6 +145,9 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
     createdAt: nowIso(),
   };
   await p.put('messages', userMsg.id, userMsg);
+  // 立刻把后端真实 user 消息 ID 下发给前端替换乐观 ID，否则用户对刚发的消息发起 branch
+  // 或 edit 时，前端持有的乐观 ID 在后端查不到 → 400 not_found。
+  yield { type: 'user_persisted', messageId: userMsg.id };
 
   // 2. 创建 assistant 占位消息
   const asstMsg: Message = {

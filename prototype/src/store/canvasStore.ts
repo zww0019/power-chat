@@ -38,6 +38,9 @@ interface CanvasActions {
   removeEdge: (id: string) => void;
   removeEdgesTouching: (nodeId: string) => void;
   upsertMessage: (msg: Message) => void;
+  // 把 store 中某条消息的 ID 替换为新 ID。用于 SSE user_persisted / done 事件到达后，
+  // 把前端乐观 ID 替换成后端持久化 ID——否则后续 branch / edit 等按 ID 查后端的操作会 404。
+  replaceMessageId: (oldId: string, newId: string) => void;
   // 删除指定节点中 sequence ≥ fromSequence 的所有消息（用户编辑触发的本地同步）
   removeMessagesFromSequence: (nodeId: string, fromSequence: number) => void;
   appendMessageContent: (msgId: string, contentDelta: string, reasoningDelta?: string) => void;
@@ -161,6 +164,17 @@ export const useCanvasStore = create<Store>()(
 
       upsertMessage: (msg) =>
         set((s) => ({ messages: { ...s.messages, [msg.id]: msg } })),
+
+      replaceMessageId: (oldId, newId) =>
+        set((s) => {
+          if (oldId === newId) return s;
+          const existing = s.messages[oldId];
+          if (!existing) return s;
+          // 同时改 map key 与 message.id 字段；其它 store 字段（streamingByNode 按 nodeId、
+          // edges.inheritedUntilSequence 按 sequence）均不引用 messageId，无需联动。
+          const { [oldId]: _, ...rest } = s.messages;
+          return { messages: { ...rest, [newId]: { ...existing, id: newId } } };
+        }),
 
       removeMessagesFromSequence: (nodeId, fromSequence) =>
         set((s) => ({

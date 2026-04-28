@@ -11,8 +11,11 @@ import type { Message, StreamEvent } from '../types';
 const newMsgId = () => `m_${Math.random().toString(36).slice(2, 11)}`;
 
 /**
- * SSE 事件 → store 的统一分发：避免 sendMessage / retryRefine 回调各自手写 switch。
- * 调用方仅需 `(evt) => applyStreamEvent(evt, asstMsgId)`。
+ * SSE 事件 → store 的统一分发：避免 performSendMessage / performRetryRefine 回调各自手写 switch。
+ *
+ * 注意：user_persisted 和 done 两个事件需要同步更新调用方的闭包 ID 变量，不能被这层函数
+ * 完全封装——performSendMessage 在外层拦截这两个事件后再调用本函数（或直接处理）；
+ * performRetryRefine 无乐观 ID 场景，可直接 `(evt) => applyStreamEvent(evt, msgId)` 使用。
  *
  * 命名辨析：同名函数 `runAssistantStream`（src/modules/_utils.ts）在后端做 buffer 累加
  * + 持久化；本函数仅做前端内存 store 更新，两者职责完全不同，不要混淆。
@@ -23,7 +26,12 @@ export function applyStreamEvent(evt: StreamEvent, asstMsgId: string): void {
     case 'reasoning': store.appendMessageContent(asstMsgId, '', evt.delta); break;
     case 'reasoning_details': store.appendMessageReasoningDetails(asstMsgId, evt.delta); break;
     case 'content': store.appendMessageContent(asstMsgId, evt.delta); break;
-    case 'done': store.finalizeMessage(asstMsgId); break;
+    case 'done':
+      // 先把乐观 ID 替换为后端真实 ID，再 finalize——否则用户立即对该消息发起 branch
+      // 时，前端传给后端的 ID 是乐观 ID，后端查不到 → 400 not_found。
+      store.replaceMessageId(asstMsgId, evt.messageId);
+      store.finalizeMessage(evt.messageId);
+      break;
     case 'title':
       // D006 双轨制 · 自动轨成功：每 3 轮触发一次后端 onComplete → SSE title 事件。
       // 静默更新内存 store 即可，不弹 toast 避免对话流中频繁打扰用户。
@@ -92,8 +100,12 @@ export async function performSendMessage(nodeId: string, text: string): Promise<
     .sort((a, b) => a.sequence - b.sequence);
   const userSequence = (ownMessages[ownMessages.length - 1]?.sequence ?? -1) + 1;
 
+  // user / asst 占位消息 ID 用 let：SSE user_persisted / done 事件到达后会被替换为
+  // 后端真实 ID，闭包持有的 *MsgId 也需同步更新，以便后续 case（如再来一帧 reasoning）
+  // 能命中替换后的 store key。
+  let userMsgId = newMsgId();
   const userMsg: Message = {
-    id: newMsgId(),
+    id: userMsgId,
     nodeId,
     role: 'user',
     content: text,
@@ -103,7 +115,7 @@ export async function performSendMessage(nodeId: string, text: string): Promise<
   };
   store.upsertMessage(userMsg);
 
-  const asstMsgId = newMsgId();
+  let asstMsgId = newMsgId();
   store.upsertMessage({
     id: asstMsgId,
     nodeId,
@@ -119,6 +131,21 @@ export async function performSendMessage(nodeId: string, text: string): Promise<
 
   try {
     await api.streamMessage(nodeId, text, (evt) => {
+      // user_persisted / done 的 ID 替换需在 applyStreamEvent 之前/内部执行，
+      // 以保证 done 之后立即触发的 branch / edit 能用到真实 ID。
+      // user_persisted 不进 applyStreamEvent（后者不持有 userMsgId），就地处理。
+      if (evt.type === 'user_persisted') {
+        store.replaceMessageId(userMsgId, evt.messageId);
+        userMsgId = evt.messageId;
+        return;
+      }
+      if (evt.type === 'done') {
+        // applyStreamEvent 内部会做 ID 替换 + finalize；这里同步更新闭包变量，
+        // 防止之后任何按 asstMsgId 的引用落到已废弃的 oldId 上。
+        applyStreamEvent(evt, asstMsgId);
+        asstMsgId = evt.messageId;
+        return;
+      }
       applyStreamEvent(evt, asstMsgId);
       if (evt.type === 'agent_final') {
         // bumpAgentStat 仅由 agent_final 触发（决策 29 / M5）：

@@ -186,3 +186,9 @@
 **处理**: provider 路由分支翻译——`reasoning` 字段格式由 provider 决定（详见 R022），不要假设单一字段名能跨家通用；新增 provider 时必须先查目标家协议文档确认字段
 **原因**: OpenAI 兼容协议各家在"基础 chat/completions" 维度兼容，但思考相关字段是各家私有扩展；OpenRouter 自己也在做"翻译层"——本侧发什么字段决定了 OpenRouter 翻不翻、怎么翻
 **事故记录**: 2026-04-27 用户报告"接入 OpenRouter 后开启思考无效"——实际请求成功但思考从未激活；并存的 SSE 解析侧只读 `delta.reasoning_content`（DeepSeek 私有字段），即便 OpenRouter 真返回思考也读不到。两个根因叠加导致用户看不到任何思考内容
+
+## E022 · 前端乐观消息 ID 与后端真实 ID 不同步会让 branch / edit 失败
+**场景**: 用户发送一条新消息，AI 回复完成后立即点击该 AI 消息的"分支"按钮，后端返回 400 fromMessageId not found in parent
+**处理**: 后端在 user 消息持久化后立即 yield `user_persisted` 事件下发真实 ID（必须早于第一帧 reasoning / content）；assistant 消息复用已有 `done` 事件的 messageId 字段；前端在两个事件到达时把 store 中的占位 ID 替换为真实 ID，闭包持有的占位变量同步更新
+**原因**: 前端为让 UI 立即显示 user 气泡和 assistant 流式光标，乐观生成消息 ID 写入 store；后端持久化时为保证 ID 唯一性按"时间戳 + 随机"另行生成。两端 ID 格式都不相同，store 里的乐观 ID 在后端查无此项——任何按 ID 查后端的操作（branch / edit / truncate）都会失败
+**事故记录**: 2026-04-28 用户对刚发完的 AI 消息点分支即报 400 not_found；根因是 SSE 协议从未把后端 user 消息真实 ID 回传前端，已存的 `done.messageId` 也被前端 finalize 时忽略。本次补全协议（新增 user_persisted + done 内做 ID 替换）后链路闭环

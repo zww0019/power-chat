@@ -106,6 +106,10 @@ export type StreamEvent =
   // 与 'reasoning' 并行 yield（'reasoning' 给 UI 渲染，本事件给持久化以维持多轮思考连续性）
   | { type: 'reasoning_details'; delta: ReasoningDetail[] }
   | { type: 'content'; delta: string }
+  // user 消息持久化完成。前端乐观生成的 user 消息 ID 与后端独立生成的真实 ID 不同，
+  // 此事件让前端把 store 中的占位 ID 替换为后端真实 ID，保证后续 branch / edit 等按
+  // ID 查后端的操作能命中持久化记录。必须在第一帧 reasoning / content 之前 yield。
+  | { type: 'user_persisted'; messageId: string }
   | { type: 'done'; messageId: string }
   | { type: 'error'; error: string }
   // 自动标题生成成功（双轨制中的"自动"轨）：每 3 轮（6 条 message）触发一次。
