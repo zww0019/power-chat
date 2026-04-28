@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
-import type { Settings } from '../types';
+import type { Settings, SettingsProvider, ThinkingEffort } from '../types';
 import { color, text, space, radius, font, motion } from '../styles/theme';
 import { ModalShell, DialogButton } from './_dialogPrimitives';
 
@@ -17,7 +17,22 @@ interface FormState {
   llmApiKey: string;
   tavilyApiKey: string;
   thinkingModeEnabled: boolean;
+  thinkingEffort: ThinkingEffort;
+  provider: SettingsProvider;
 }
+
+const PROVIDER_OPTIONS: { value: SettingsProvider; label: string }[] = [
+  { value: 'openrouter', label: 'OpenRouter（聚合各家模型）' },
+  { value: 'openai', label: 'OpenAI（o-series 推理模型）' },
+  { value: 'deepseek', label: 'DeepSeek（R1 系列）' },
+  { value: 'custom', label: 'Custom（自建中转 / 其他）' },
+];
+
+const EFFORT_OPTIONS: { value: ThinkingEffort; label: string; hint: string }[] = [
+  { value: 'low', label: '低', hint: '约 20% token 用于思考' },
+  { value: 'medium', label: '中', hint: '约 50% token 用于思考（默认）' },
+  { value: 'high', label: '高', hint: '约 80% token 用于思考' },
+];
 
 interface TestResult {
   status: 'idle' | 'testing' | 'ok' | 'error';
@@ -36,6 +51,8 @@ export function SettingsDialog({ open, onClose }: Props) {
     llmApiKey: '',
     tavilyApiKey: '',
     thinkingModeEnabled: false,
+    thinkingEffort: 'medium',
+    provider: 'custom',
   });
   const [maskedKey, setMaskedKey] = useState('');
   const [maskedTavilyKey, setMaskedTavilyKey] = useState('');
@@ -60,6 +77,9 @@ export function SettingsDialog({ open, onClose }: Props) {
           llmApiKey: '',
           tavilyApiKey: '',
           thinkingModeEnabled: !!s.thinkingModeEnabled,
+          // 旧 db.json 缺字段时后端 getSettings 已按 baseURL 推断 + 兜底，前端直接信任返回值
+          thinkingEffort: (s.thinkingEffort ?? 'medium') as ThinkingEffort,
+          provider: (s.provider ?? 'custom') as SettingsProvider,
         });
         setMaskedKey(s.llmApiKey ?? '');
         setMaskedTavilyKey(s.tavilyApiKey ?? '');
@@ -77,6 +97,8 @@ export function SettingsDialog({ open, onClose }: Props) {
       llmModel: form.llmModel,
       llmFastModel: form.llmFastModel,
       thinkingModeEnabled: form.thinkingModeEnabled,
+      thinkingEffort: form.thinkingEffort,
+      provider: form.provider,
     };
     if (apiKeyDirty) patch.llmApiKey = form.llmApiKey;
     if (tavilyKeyDirty) patch.tavilyApiKey = form.tavilyApiKey;
@@ -120,6 +142,18 @@ export function SettingsDialog({ open, onClose }: Props) {
       zIndex={1000}
     >
       {loadError && <div style={errorBox}>{loadError}</div>}
+
+      <Field label="Provider" hint="决定 reasoning 字段格式与多轮思考连续性策略。OpenRouter 聚合模型请选 OpenRouter；自建中转选 Custom 走兼容路径">
+        <select
+          value={form.provider}
+          onChange={(e) => setForm({ ...form, provider: e.target.value as SettingsProvider })}
+          style={inputStyle}
+        >
+          {PROVIDER_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+      </Field>
 
       <Field label="Base URL" hint="OpenAI 兼容协议的服务根地址，例如 https://api.deepseek.com/v1">
         <input
@@ -190,6 +224,38 @@ export function SettingsDialog({ open, onClose }: Props) {
         />
         <span style={{ color: color.ink800 }}>启用思考模式（流式中显示模型 reasoning 内容）</span>
       </label>
+
+      {form.thinkingModeEnabled && (
+        <div style={{ paddingLeft: 26, marginBottom: space.s3 }}>
+          <div style={{ fontSize: text.xs, color: color.ink500, marginBottom: 6 }}>思考强度</div>
+          <div style={{ display: 'flex', gap: space.s2 }}>
+            {EFFORT_OPTIONS.map((opt) => {
+              const active = form.thinkingEffort === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setForm({ ...form, thinkingEffort: opt.value })}
+                  title={opt.hint}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: radius.md,
+                    border: `0.5px solid ${active ? color.accent500 : color.ink300}`,
+                    background: active ? color.accent500 : color.raised,
+                    color: active ? '#fff' : color.ink800,
+                    fontSize: text.sm,
+                    fontFamily: font.sans,
+                    cursor: 'pointer',
+                    transition: `background ${motion.durFast}ms ${motion.easeInOut}, border-color ${motion.durFast}ms ${motion.easeInOut}`,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 测试连接结果 */}
       <div style={{ marginTop: space.s2, marginBottom: space.s2, minHeight: 24, fontSize: text.sm }}>

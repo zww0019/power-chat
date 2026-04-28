@@ -5,6 +5,7 @@
 
 import { useCanvasStore } from '../store/canvasStore';
 import { api } from '../api/client';
+import { toast } from '../store/toastStore';
 import type { Message, StreamEvent } from '../types';
 
 const newMsgId = () => `m_${Math.random().toString(36).slice(2, 11)}`;
@@ -20,9 +21,22 @@ export function applyStreamEvent(evt: StreamEvent, asstMsgId: string): void {
   const store = useCanvasStore.getState();
   switch (evt.type) {
     case 'reasoning': store.appendMessageContent(asstMsgId, '', evt.delta); break;
+    case 'reasoning_details': store.appendMessageReasoningDetails(asstMsgId, evt.delta); break;
     case 'content': store.appendMessageContent(asstMsgId, evt.delta); break;
     case 'done': store.finalizeMessage(asstMsgId); break;
-    case 'title': store.updateNode(evt.nodeId, { title: evt.title }); break;
+    case 'title':
+      // D006 双轨制 · 自动轨成功：每 3 轮触发一次后端 onComplete → SSE title 事件。
+      // 静默更新内存 store 即可，不弹 toast 避免对话流中频繁打扰用户。
+      store.updateNode(evt.nodeId, { title: evt.title });
+      break;
+    case 'title_error':
+      // 自动轨失败：toast 提示用户检查配置。
+      // prefix 用"自动生成标题失败"而非"标题生成失败"，让用户能区分是后台自动触发的失败
+      // 还是主动点击按钮触发的失败（两条路径的 prefix 故意不同，非漏改）。
+      // error code 由后端 classifyTitleError 归类成与 HTTP 路径相同的简化 code。
+      console.error('[auto-title]', evt.error);
+      toast.error(titleErrorMessage(evt.error, '自动生成标题失败'));
+      break;
     case 'error':
       // D021 配套：错误同时写入 message + DevTools console。
       // 仅 console.error 会让 UI 静默无反馈，用户看不到失败原因（如 context_overflow / 400）
@@ -30,6 +44,18 @@ export function applyStreamEvent(evt: StreamEvent, asstMsgId: string): void {
       store.markMessageError(asstMsgId, evt.error);
       break;
   }
+}
+
+// 把 error code 映射成中文 toast 文案。自动轨（title_error 事件）和主动轨（performRegenerateTitle 的 catch）
+// 共用同一组 code 语义，统一维护避免两条路径各自定义后出现语义漂移（D006 双轨制设计意图）。
+// prefix：调用方传入的路径描述，如"自动生成标题失败"或"标题生成失败"，
+//         让用户在 toast 中看到是哪条路径触发的失败，而非统一的笼统文案。
+function titleErrorMessage(code: string, prefix: string): string {
+  if (code === 'empty_node') return `${prefix}：节点尚无对话消息`;
+  if (code === 'not_configured') return `${prefix}：LLM 未配置，请先在设置中填写 baseURL / model / apiKey`;
+  if (code === 'not_found') return `${prefix}：节点不存在或已被删除`;
+  if (code === 'llm_failed') return `${prefix}：快模型不可达或返回为空，请检查设置`;
+  return `${prefix}：${code}`;
 }
 
 /**
@@ -238,6 +264,48 @@ export async function performEditMessage(
   }
   store.removeMessagesFromSequence(nodeId, editedSequence);
   await performSendMessage(nodeId, newContent);
+}
+
+/**
+ * 用户主动触发"标题重新生成"（点击节点标题旁的刷新图标，D006 双轨制 · 主动轨）。
+ *
+ * 永远强制重新生成（不判断 node.title 是否已有值），失败时 toast 提示原因，
+ * 保留旧标题不变。与自动轨（title_error 事件 → applyStreamEvent）共用同一组
+ * error code 语义：api.regenerateNodeTitle 抛出的 Error.message 形如
+ * "[502] llm_failed: ..."，按 includes 提取 code 后走 titleErrorMessage 映射。
+ */
+export async function performRegenerateTitle(nodeId: string): Promise<void> {
+  const store = useCanvasStore.getState();
+  if (!store.nodes[nodeId]) {
+    toast.error('节点不存在，无法生成标题');
+    return;
+  }
+  try {
+    const { title } = await api.regenerateNodeTitle(nodeId);
+    store.updateNode(nodeId, { title });
+    toast.success(`已生成新标题：${title}`);
+  } catch (e) {
+    const msg = (e as Error).message ?? String(e);
+    const code = extractTitleErrorCode(msg);
+    if (code === 'unknown') {
+      console.error('regenerateNodeTitle failed', e);
+      toast.error(`标题生成失败：${msg}`);
+      return;
+    }
+    toast.error(titleErrorMessage(code, '标题生成失败'));
+  }
+}
+
+// 从 HTTP 错误响应文本（"[502] llm_failed: ..."）中提取错误码。
+// 与后端 conversation.classifyTitleError 的输出 code 严格对齐（同一组 code 字符串）。
+// 命名差异说明：后端函数接受 exception 对象做类型分派（classify），
+// 本函数接受字符串用 includes 做子串匹配（extract），职责不同，名字各自准确。
+function extractTitleErrorCode(msg: string): string {
+  if (msg.includes('empty_node')) return 'empty_node';
+  if (msg.includes('not_configured')) return 'not_configured';
+  if (msg.includes('not_found')) return 'not_found';
+  if (msg.includes('llm_failed') || msg.includes('502')) return 'llm_failed';
+  return 'unknown';
 }
 
 /** 从节点的某条 AI 消息分支出新对话节点。 */

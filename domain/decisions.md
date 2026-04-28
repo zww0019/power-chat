@@ -571,3 +571,32 @@
 - 新增依赖 `lucide-react@^1.11.0`（约 30KB gzip）
 - 后续新增弹窗一律复用 `ModalShell`；新增 icon 按钮一律复用 `IconButton`；新增主/次按钮一律复用 `DialogButton`；新增图标一律 lucide-react；新增可复用样式抽到 `_dialogPrimitives.tsx` 或新建 primitives 文件而非逐组件内联
 
+
+## D029 · OpenRouter 思考兼容改造（provider 显式枚举 + 字段并集解析）
+**决策日期**: 2026-04-28
+**背景**: 用户接入 OpenRouter 后报告"开启思考无效"。代码梳理定位两个并列根因：
+- **请求侧**：`buildOpenAIRequestBody` 无差别发 `reasoning:{enabled:true}`——这是项目自造字段名，OpenRouter 实际接受 `reasoning:{effort:"medium"}`，字段名不匹配被静默忽略，思考从未激活
+- **响应侧**：`parseSSELine` 只读 `delta.reasoning_content`（DeepSeek 私有字段）——OpenRouter 流式响应使用 `delta.reasoning`（字符串）和 `delta.reasoning_details`（结构化数组），前端永远收不到思考内容
+
+**决定**:
+- **显式 provider 枚举**：Settings 加 `provider: 'openai' | 'deepseek' | 'openrouter' | 'custom'` 字段；不用 baseURL 字符串包含判断（更显式、用户可手动覆写）；旧 db.json 缺字段时按 baseURL 启发式推断一次（含 openrouter.ai → openrouter，依此类推）
+- **思考强度三档**：Settings 加 `thinkingEffort: 'low' | 'medium' | 'high'`，默认 medium；UI 在思考开关打开时显示三档按钮；OpenRouter/OpenAI 走 `reasoning.effort`，DeepSeek/custom 不映射
+- **请求体按 provider 分支翻译**：详见 R022——四档 provider 各自独立路径，OpenRouter/OpenAI 用 effort，DeepSeek 不写，custom 兜底 enabled 保留旧契约
+- **SSE 字段并集解析**：取 `delta.reasoning` / `delta.reasoning_content` / `delta.reasoning_details` 并集，命中任一就拍平为纯文本 yield reasoning 事件给 UI；同时并行 yield reasoning_details 事件让持久化层保留原始结构（用户决策"显示一致 + 上下文保留一起做"）
+- **思考显示一致**：所有 provider 拍平到 `Message.reasoningContent` 字符串，UI 复用现有 ReasoningBlock 折叠组件，不为不同 provider 维护差异化展示
+- **多轮思考连续性**：详见 R023——OpenRouter 路径下持久化 `Message.reasoningDetails` 并跨轮回灌；其他 provider 静默丢弃，避免中转端点 400
+- **移除 Anthropic 分支**：用户使用 Claude 模型统一走 openrouter 路径，OpenRouter 内部翻译 effort 到 thinking.budget_tokens；本侧不维护 Anthropic 协议直连分支（用户在阶段 2 v2 显式要求移除）
+- **thinkingModeEnabled 默认值不变**（保持 false）
+
+**理由**:
+- 显式 provider 枚举：URL 字符串包含判断脆弱（用户可能用反代/私有路径），且用户可能希望"我用 OpenRouter 的 baseURL 但走 custom 兜底契约"——枚举字段允许这种意图表达
+- SSE 字段取并集：四个推理协议家族字段名不一致是事实（OpenRouter 标准化 `reasoning`、DeepSeek 用 `reasoning_content`、OpenRouter 结构化用 `reasoning_details`），上游不会统一；本地取并集比按 provider 切换解析路径更稳（OpenRouter 内部本身也会出现 reasoning + reasoning_details 同帧）
+- 显示一致：OpenRouter `reasoning_details` 含 type=reasoning.encrypted 类型（无文本仅有 data）等多种形态，给 UI 维护差异化展示成本高、收益低；拍平到字符串后 UI 链路与现有 DeepSeek 路径完全一致
+- 多轮回灌：OpenRouter 文档 §Preserving Reasoning 明确要求 reasoning_details 在多轮 + 工具调用场景必须按原结构回传，否则模型丢失思考连续性
+
+**影响**:
+- 既有 DeepSeek/custom 用户**无感升级**：custom 分支保留旧 `reasoning:{enabled:true}` 契约；DeepSeek 路径仍走 reasoning_content 字段；旧 db.json 自动按 baseURL 推断 provider
+- OpenAI o1/o3 系列首次可用：之前发 `enabled:true` 也被忽略，现在改成正确的 `effort` 字段
+- `Message`/`LLMMessage` 加可选 `reasoningDetails: ReasoningDetail[] | null` 字段；`StreamEvent` 加 `reasoning_details` 事件类型；`db.json` 数据量上限随 OpenRouter 思考密集场景增加（可接受，未来若有问题再做截断）
+- 设置弹窗加 Provider 下拉 + Effort 三档按钮（仅在思考开关打开时可见）
+- 单元测试覆盖请求体形态四分支 + SSE 字段并集；集成测试验证端到端 reasoning_details 持久化与多轮回灌

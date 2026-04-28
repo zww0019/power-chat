@@ -6,7 +6,14 @@
 // - reasoningContent：conversation-module 按协议透传，本模块 toOpenAIMessage 写入
 //   snake_case 的 reasoning_content 字段（DeepSeek-Reasoner 多轮要求，不带会 400）
 
-import type { LLMMessage, LLMToolCall, StreamEvent } from '../types.js';
+import type {
+  LLMMessage,
+  LLMToolCall,
+  ReasoningDetail,
+  SettingsProvider,
+  StreamEvent,
+  ThinkingEffort,
+} from '../types.js';
 import { NotConfiguredError } from '../types.js';
 import { getSettings, isConfigured } from './settings.js';
 import { chunkText } from './_utils.js';
@@ -64,6 +71,11 @@ export function getModelLimit(model: string): number {
 export interface StreamChatParams {
   messages: LLMMessage[];
   enableReasoning: boolean;
+  // 思考强度三档；调用方未传时由 buildOpenAIRequestBody 从 settings 兜底取 'medium'。
+  // 仅当 enableReasoning=true 时生效
+  thinkingEffort?: ThinkingEffort;
+  // provider 路由：决定 reasoning 字段格式（effort vs enabled）以及历史 reasoning_details 是否回填
+  provider?: SettingsProvider;
   isRefineTask?: boolean; // 用于 mock 时区分调用类型
   // 调用方覆写采样参数；未传走端点默认
   temperature?: number;
@@ -84,6 +96,10 @@ export interface StreamChatParams {
 // 且各家 API 真实上限可能差异）；改为信任真实 LLM API 的拒绝行为。
 // `estimateTokens` / `estimateMessagesTokens` / `MODEL_LIMITS` / `ContextOverflowError`
 // 类仍保留供未来 UI 展示 token 用量或重新激活守卫使用。
+//
+// TODO(refactor): 本函数承担"配置守卫 + 兜底取值 + mock/real 路由 + 诊断日志"四件事，
+// CCN=18 超阈值（lizard 阈值 15）。重构方向：拆 resolveStreamSettings(params)+selectStream(useMock)
+// 两个小函数。范围超出本次 OpenRouter 改造，留给后续单独任务
 export async function* streamChat(params: StreamChatParams): AsyncIterable<StreamEvent> {
   if (!(await isConfigured()) && process.env.USE_MOCK_LLM !== '1') {
     throw new NotConfiguredError();
@@ -91,14 +107,33 @@ export async function* streamChat(params: StreamChatParams): AsyncIterable<Strea
 
   const settings = await getSettings();
   const model = params.modelOverride || settings.llmModel || 'mock-model';
+  // 调用方未显式指定时，从 settings 兜底——保持"调用方可覆写、未覆写按用户配置"的语义
+  const provider: SettingsProvider = params.provider ?? settings.provider ?? 'custom';
+  const effort: ThinkingEffort = params.thinkingEffort ?? settings.thinkingEffort ?? 'medium';
+  // USE_MOCK_LLM=1 强制 mock（测试/CI）；apiKey 为空时也走 mock（未配置场景），两者都满足才是真实请求
+  const useMock = process.env.USE_MOCK_LLM === '1' || !settings.llmApiKey;
 
-  if (process.env.USE_MOCK_LLM === '1' || !settings.llmApiKey) {
+  // 开发期诊断日志：Electron 主进程 / mock-server 进程的 stdout 直达终端，
+  // 让用户能秒判"是否真的调了真实 API + 用的哪个模型 + 附了多少历史"。
+  // 打包后的 Electron 主进程 console 默认丢弃，对生产无副作用。
+  // 注意：firstUserMsgPreview 包含用户 prompt 头 30 字，仅输出到本地终端，不入文件、不上传。
+  const firstUserMsgPreview = params.messages.find((m) => m.role === 'user')?.content?.slice(0, 30) ?? '';
+  console.log(
+    `[llm] mode=${useMock ? 'mock' : 'real'} model=${model}`,
+    `temperature=${params.temperature ?? 'default'}`,
+    `maxTokens=${params.maxTokens ?? 'default'}`,
+    `messages=${params.messages.length}`,
+    `tools=${params.tools?.length ?? 0}`,
+    `firstUserMsg="${firstUserMsgPreview}"`,
+  );
+
+  if (useMock) {
     yield* mockStream(params);
     return;
   }
 
   // 真实 OpenAI 兼容协议调用
-  yield* realStream(params, settings.llmBaseUrl, settings.llmApiKey, model);
+  yield* realStream(params, settings.llmBaseUrl, settings.llmApiKey, model, provider, effort);
 }
 
 // 一次性调用（用于标题生成等高频轻量任务）
@@ -110,22 +145,41 @@ export async function completeChat(
     return ''; // 静默失败：标题生成允许失败
   }
   const maxTokens = opts?.maxTokens ?? 32;
+  // 提前计算截止字符数，避免循环内重复乘法
+  const maxResultChars = maxTokens * 4;
   let result = '';
+  // TODO_REMOVE: 临时诊断——排查"200 OK 但前端报标题生成失败"的根因。
+  // 确认根因后删除下方三个变量及全部 [llm:title:diag] console.log。
+  // 搜索 TODO_REMOVE 可快速定位所有待删点。
+  const eventStats: Record<string, number> = {};
+  let reasoningLen = 0;
+  // 保存最近一次 error 事件文本，供诊断日志输出
+  let lastError = '';
   try {
     for await (const evt of streamChat({
       messages,
       enableReasoning: false,
       temperature: opts?.temperature,
       modelOverride: opts?.modelOverride,
+      maxTokens,
     })) {
+      eventStats[evt.type] = (eventStats[evt.type] ?? 0) + 1;
       if (evt.type === 'content') result += evt.delta;
+      if (evt.type === 'reasoning') reasoningLen += evt.delta?.length ?? 0;
       if (evt.type === 'done') break;
-      if (evt.type === 'error') return '';
-      if (result.length > maxTokens * 4) break; // 粗略提前停止
+      if (evt.type === 'error') {
+        lastError = evt.error;
+        console.log('[llm:title:diag] events=', eventStats, 'resultLen=', result.length, 'reasoningLen=', reasoningLen, 'error=', lastError);
+        return '';
+      }
+      if (result.length > maxResultChars) break; // 粗略提前停止
     }
-  } catch {
+  } catch (e) {
+    console.log('[llm:title:diag] thrown=', (e as Error)?.message ?? e, 'events=', eventStats, 'resultLen=', result.length);
     return '';
   }
+  // 注意：result 含 LLM 实际返回的标题内容，仅输出到本地终端，不入文件、不上传
+  console.log('[llm:title:diag] events=', eventStats, 'resultLen=', result.length, 'reasoningLen=', reasoningLen, 'result=', JSON.stringify(result));
   return result.slice(0, 30);
 }
 
@@ -171,7 +225,11 @@ async function* mockStream(params: StreamChatParams): AsyncIterable<StreamEvent>
   // 记录入参 messages 给测试读取（INV-11 协议层 / reasoning_content 回传断言）
   recordMockLLMMessages(params.messages);
 
-  const lastUser = [...params.messages].reverse().find((m) => m.role === 'user');
+  // 从末尾向前找最后一条 user 消息，避免拷贝整个数组后反转（messages 可能含几十条历史）
+  let lastUser: (typeof params.messages)[number] | undefined;
+  for (let i = params.messages.length - 1; i >= 0; i--) {
+    if (params.messages[i]!.role === 'user') { lastUser = params.messages[i]; break; }
+  }
   const userText = lastUser?.content ?? '';
   const toolMessageCount = params.messages.filter((m) => m.role === 'tool').length;
   const hasTools = !!(params.tools && params.tools.length > 0);
@@ -214,6 +272,20 @@ async function* mockDefaultFixtureStream(
     for (const chunk of chunkText(cannedResponse.reasoning, 8)) {
       yield { type: 'reasoning', delta: chunk };
       await sleep(30);
+    }
+    // 同步 yield 一份 reasoning_details 模拟 OpenRouter 结构化协议——让集成测试可以验证
+    // openrouter 路径下 reasoningDetails 数组被持久化、跨轮被回灌
+    if (params.provider === 'openrouter') {
+      yield {
+        type: 'reasoning_details',
+        delta: [{
+          type: 'reasoning.text',
+          text: cannedResponse.reasoning,
+          format: 'anthropic-claude-v1',
+          id: `mock_rd_${Date.now().toString(36)}`,
+          index: 0,
+        }],
+      };
     }
     await sleep(150);
   }
@@ -258,15 +330,36 @@ async function* mockFinalResponseStream(text: string): AsyncIterable<StreamEvent
   yield { type: 'done', messageId: `m_${Date.now().toString(36)}` };
 }
 
+// 日志里 body 摘要的最大字符数。
+// 500 够看清 model/stream/temperature 等顶层字段 + messages 数组开头，
+// 同时截断 prompt 正文，避免大量历史消息刷屏终端。
+const LOG_BODY_PREVIEW_CHARS = 500;
+
+// 非 2xx 错误响应体的最大字符数。
+// 200 够看 OpenAI/DeepSeek 返回的 error.code + error.message，
+// 同时避免 HTML 错误页全文（如 Cloudflare 502）撑满终端。
+const LOG_ERROR_BODY_CHARS = 200;
+
 // === real 实现（OpenAI 兼容协议）===
 async function* realStream(
   params: StreamChatParams,
   baseUrl: string,
   apiKey: string,
   model: string,
+  provider: SettingsProvider,
+  effort: ThinkingEffort,
 ): AsyncIterable<StreamEvent> {
   const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
-  const body = buildOpenAIRequestBody(params, model);
+  const body = buildOpenAIRequestBody(params, model, provider, effort);
+
+  // 请求发起：打印 URL + body 摘要，供排查"是否真的发出请求 + 发了哪些参数"。
+  // messages 数组可能含几十条历史（几十 KB），用条数摘要替代完整序列化，
+  // 避免大会话无谓把整个 messages 数组 stringify 后再丢弃。
+  // apiKey 在 fetch headers 里传递，body 不含 apiKey，无需脱敏。
+  const { messages: _msgs, ...restBody } = body;
+  const bodyPreview = JSON.stringify({ ...restBody, messages: `[${params.messages.length} items]` })
+    .slice(0, LOG_BODY_PREVIEW_CHARS);
+  console.log(`[llm:req] POST ${url}`, bodyPreview);
 
   let res: Response;
   try {
@@ -277,31 +370,68 @@ async function* realStream(
       signal: params.signal,
     });
   } catch (e) {
+    // 网络层异常（DNS/TLS/超时/AbortError）：与 yield error 事件并行——
+    // 终端能看到原始错误信息，前端 toast 仍按 classifyFetchError 的归类显示
+    console.error('[llm:err] fetch failed:', (e as Error)?.message ?? e);
     yield { type: 'error', error: classifyFetchError(e, params.signal) };
     return;
   }
 
+  // 响应状态：方便快速辨别 200 / 401 invalid_api_key / 429 rate_limit / 500 等
+  console.log(`[llm:res] ${res.status} ${res.statusText} ok=${res.ok}`);
+
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => '');
-    yield { type: 'error', error: `[${res.status}] ${text.slice(0, 200)}` };
+    // 非 2xx：把 LLM 服务端返回的具体错误信息打到终端（前 200 字够看清错误码 + message）
+    if (text) console.error('[llm:res:body]', text.slice(0, LOG_ERROR_BODY_CHARS));
+    yield { type: 'error', error: `[${res.status}] ${text.slice(0, LOG_ERROR_BODY_CHARS)}` };
     return;
   }
 
   yield* consumeOpenAIStream(res.body, params.signal);
 }
 
-// 拼装 OpenAI Chat Completion 请求体。抽出避免与流读取/错误处理的控制流混在 realStream 顶层
-function buildOpenAIRequestBody(params: StreamChatParams, model: string): Record<string, unknown> {
+// 拼装 OpenAI Chat Completion 请求体。抽出避免与流读取/错误处理的控制流混在 realStream 顶层。
+// export 让单测可以直接断言不同 provider 下的请求体形态
+export function buildOpenAIRequestBody(
+  params: StreamChatParams,
+  model: string,
+  provider: SettingsProvider,
+  effort: ThinkingEffort,
+): Record<string, unknown> {
   return {
     model,
-    // OpenAI 协议字段名是 snake_case；仓库内部用 camelCase——这里做一次转换
-    messages: params.messages.map(toOpenAIMessage),
+    // OpenAI 协议字段名是 snake_case；仓库内部用 camelCase——这里做一次转换。
+    // openrouter 分支额外回填 reasoning_details，让模型在多轮 + 工具调用场景下保持思考连续性
+    messages: params.messages.map((m) => toOpenAIMessage(m, provider)),
     stream: true,
     ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
     ...(params.maxTokens !== undefined ? { max_tokens: params.maxTokens } : {}),
-    ...(params.enableReasoning ? { reasoning: { enabled: true } } : {}),
+    ...buildReasoningField(params.enableReasoning, provider, effort),
     ...(params.tools && params.tools.length > 0 ? { tools: params.tools } : {}),
   };
+}
+
+// 按 provider 翻译 reasoning 字段。OpenRouter 与 OpenAI 推理模型都识别 reasoning.effort；
+// DeepSeek-R1 通过模型名（deepseek-reasoner）自动启用思考，不需额外字段；
+// 'custom' 是兜底向后兼容路径——保留旧 { enabled: true } 形态，让自定义中转端点不破坏既有行为
+function buildReasoningField(
+  enabled: boolean,
+  provider: SettingsProvider,
+  effort: ThinkingEffort,
+): Record<string, unknown> {
+  if (!enabled) return {};
+  if (provider === 'openrouter' || provider === 'openai') {
+    // OpenRouter / OpenAI 接受 effort 字符串；OpenRouter 内部会按底层 provider 翻译为
+    // Anthropic 的 thinking.budget_tokens 或 Gemini 的 thinkingLevel——本侧不必关心
+    return { reasoning: { effort, exclude: false } };
+  }
+  if (provider === 'deepseek') {
+    // DeepSeek-Reasoner 通过模型名激活思考；带 reasoning 字段反而可能 400
+    return {};
+  }
+  // custom：旧契约 { enabled: true }——既有用户/中转端点不会因 provider 字段缺失而失效
+  return { reasoning: { enabled: true } };
 }
 
 // AbortError 与普通错误的双重识别（DOMException name + signal.aborted），让调用方区分用户中断与基础设施失败
@@ -367,11 +497,17 @@ function flushAggregatedToolCalls(buf: Map<number, ToolCallAggBuf>): LLMToolCall
 }
 
 // 把仓库内部 LLMMessage（camelCase）转为 OpenAI Chat Completion API 期望的 snake_case 形态
-function toOpenAIMessage(m: LLMMessage): Record<string, unknown> {
+function toOpenAIMessage(m: LLMMessage, provider: SettingsProvider): Record<string, unknown> {
   const msg: Record<string, unknown> = { role: m.role, content: m.content };
   // reasoning_content：DeepSeek-Reasoner 思考模式协议要求 assistant 历史消息携带；
   // 不要求的模型会忽略此字段，因此始终透传不需按模型分支判断
   if (m.reasoningContent) msg.reasoning_content = m.reasoningContent;
+  // reasoning_details：仅 OpenRouter 协议要求多轮回传以维持思考连续性。
+  // 其他 provider 看见此字段会按 OpenAI 兼容协议直接忽略，但部分 DeepSeek 中转端点
+  // 对未知字段会 400，所以收紧到 openrouter 分支才回填
+  if (provider === 'openrouter' && m.reasoningDetails && m.reasoningDetails.length > 0) {
+    msg.reasoning_details = m.reasoningDetails;
+  }
   if (m.toolCalls && m.toolCalls.length > 0) {
     msg.tool_calls = m.toolCalls.map((tc) => ({
       id: tc.id,
@@ -393,7 +529,8 @@ interface ToolCallChunk {
 
 // 单行 SSE 解析：识别 OpenAI 兼容协议的 `data: { ... }` 帧。
 // 返回普通文本 events + tool_call delta chunks（分两路是因为后者需跨行累积，前者是即时增量）。
-function parseSSELine(line: string, currentMsgId: string): {
+// export 让单测覆盖三家协议字段名（reasoning / reasoning_content / reasoning_details）的解析路径
+export function parseSSELine(line: string, currentMsgId: string): {
   events: StreamEvent[];
   toolCallChunks: ToolCallChunk[];
   newMsgId: string;
@@ -407,24 +544,56 @@ function parseSSELine(line: string, currentMsgId: string): {
     const delta = chunk.choices?.[0]?.delta;
     const newMsgId = chunk.id ?? currentMsgId;
     if (!delta) return { events: [], toolCallChunks: [], newMsgId };
-    const events: StreamEvent[] = [];
-    const toolCallChunks: ToolCallChunk[] = [];
-    if (delta.reasoning_content) events.push({ type: 'reasoning', delta: delta.reasoning_content });
-    if (delta.content) events.push({ type: 'content', delta: delta.content });
-    if (Array.isArray(delta.tool_calls)) {
-      for (const tc of delta.tool_calls) {
-        toolCallChunks.push({
-          index: tc.index ?? 0,
-          id: tc.id,
-          name: tc.function?.name,
-          argumentsDelta: tc.function?.arguments,
-        });
-      }
-    }
-    return { events, toolCallChunks, newMsgId };
+    const events: StreamEvent[] = [
+      ...extractReasoningEvents(delta),
+      ...(delta.content ? [{ type: 'content', delta: delta.content } as StreamEvent] : []),
+    ];
+    return { events, toolCallChunks: extractToolCallChunks(delta), newMsgId };
   } catch {
     return { events: [], toolCallChunks: [], newMsgId: currentMsgId };
   }
+}
+
+// 三家协议字段名并集解析：
+// - delta.reasoning_content —— DeepSeek-Reasoner 私有字段
+// - delta.reasoning —— OpenRouter / Anthropic 标准化字段（字符串）
+// - delta.reasoning_details —— OpenRouter 结构化数组（含 type=reasoning.text/.summary 等）
+// 命中任一就拍平为纯文本 yield 'reasoning'；reasoning_details 同时单独 yield 让持久化层留底原始结构
+function extractReasoningEvents(delta: Record<string, unknown>): StreamEvent[] {
+  const out: StreamEvent[] = [];
+  const text = extractReasoningText(delta);
+  if (text) out.push({ type: 'reasoning', delta: text });
+  const details = delta.reasoning_details;
+  if (Array.isArray(details) && details.length > 0) {
+    out.push({ type: 'reasoning_details', delta: details as ReasoningDetail[] });
+  }
+  return out;
+}
+
+// 单帧 reasoning 文本拍平：优先级 reasoning > reasoning_content > reasoning_details 各项 text/summary 拼接。
+// 每个 SSE 帧独立返回本帧增量，由上游 buffer 处理累加
+function extractReasoningText(delta: Record<string, unknown>): string {
+  if (typeof delta.reasoning === 'string' && delta.reasoning) return delta.reasoning;
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) return delta.reasoning_content;
+  if (Array.isArray(delta.reasoning_details)) {
+    return (delta.reasoning_details as ReasoningDetail[])
+      .map((d) => (typeof d?.text === 'string' ? d.text : typeof d?.summary === 'string' ? d.summary : ''))
+      .filter((s) => s.length > 0)
+      .join('');
+  }
+  return '';
+}
+
+// 从单帧 delta 提取 tool_call delta chunks。tool_calls 协议跨多帧增量，外层按 index 累积成完整调用
+function extractToolCallChunks(delta: Record<string, unknown>): ToolCallChunk[] {
+  const calls = delta.tool_calls;
+  if (!Array.isArray(calls)) return [];
+  return calls.map((tc) => ({
+    index: tc.index ?? 0,
+    id: tc.id,
+    name: tc.function?.name,
+    argumentsDelta: tc.function?.arguments,
+  }));
 }
 
 function sleep(ms: number): Promise<void> {

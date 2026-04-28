@@ -34,10 +34,24 @@
 **原因**: `reset` 端点对 NODE_ENV != production 一律开放，且持久层是单进程文件适配器，无法在运行时区分"测试请求"与"用户请求"
 **事故记录**: 2026-04-26 一次开发会话中，AI 助手未设隔离环境变量直接跑了 3 次集成测试，导致真实画布的 nodes/edges/messages 全部被清空且无备份可恢复（项目非 git、无 Time Machine、无 APFS 快照）
 
-## E008 · 节点标题生成失败时静默
-**场景**: 第 N 轮对话完成，后端尝试用快模型生成节点标题，但 LLM 调用失败（网络/限流/格式错误）
-**处理**: 错误被 try/catch 吞掉，不向客户端推送 'title' 事件；node.title 保持原值（可能仍是 null 或上一轮生成的旧值）
-**原因**: 标题是装饰性信息，不应影响主对话流程；用户看到旧/默认标题不会丢失数据，重试体验更稳
+## E008 · 节点标题生成的双轨制演进（2026-04-27 同日两次迭代）
+**历史背景**:
+- 旧设计："每 3 轮对话（6 条 message）异步生成标题，失败静默"
+- 失败模式 1：触发计数器用 sequence 偏移（`(nextSeq + 2) % 6`）而非实际轮数；节点经历过"消息截断式删除"后，剩余 sequence 跨过 6 的整除位（如最大 sequence=4 后下一轮 nextSeq=5、totalMessages=7、9、11…永远不能被 6 整除），标题再也不会触发
+- 失败模式 2：`updateNodeTitle` 被 `.catch(() => null)` 静默吞错；快模型不可达 / apiKey 无权限 / 配置成无效模型时全链路零日志、零提示，用户察觉不到失败
+
+**演进过程**:
+1. 第一次修订（2026-04-27 上午）：完全废弃自动触发，改为纯主动按钮——验证了主动轨可行性
+2. 第二次修订（2026-04-27 下午）：恢复自动触发，但修掉两个根本 bug，与主动轨形成双轨制并存
+
+**当前处理（双轨制 · D006）**:
+- **自动轨**：`sendMessage` 的 `runAgentAssistantStream` 的 `onComplete` 内触发：
+  - 触发条件改用 `messages.length >= 6 && messages.length % 6 === 0`（**消息条数**而非 sequence 偏移），从根上规避失败模式 1
+  - 失败时把领域异常归类成简化 code 通过新增的 SSE `title_error` 事件透传给前端 toast，**修复失败模式 2**
+- **主动轨**：用户点击 ↻ 按钮调 `POST /api/nodes/:id/regenerate-title`
+- 共用错误码语义（empty_node / not_configured / not_found / llm_failed / unknown）+ 共用 toast 文案映射（前端 `titleErrorMessage`），无双份漂移
+
+**原因**: 用户主权 + 错误可见原则——双轨同时满足"长期对话节点的保鲜度（自动）"和"用户随时主动控制（主动）"，且任何路径的失败都向用户暴露
 
 ## E009 · 提炼节点 title 在创建时定值，LLM 输出不覆盖
 **场景**: 提炼任务完成后，LLM 输出首行是 `【核心结论】` 而非可作标题的句子
@@ -116,15 +130,13 @@
 **事故记录**: 2026-04-26 与 D021（撤销 token 前置守卫）配套修复
 
 ## E016 · `done` 事件之后的 trailing 事件会被前端 IPC 丢弃
-**场景**: 后端 generator 在 yield `done` 之后才 yield 副作用事件（如标题生成的 `title` 事件）
+**场景**: 后端 generator 在 yield `done` 之后才 yield 副作用事件（如自动标题生成的 `title` / `title_error` 事件）
 **处理**:
-- 后端 `_utils.runAssistantStream` / `runAgentAssistantStream` 的 done 分支顺序固定为：`persistFinal → await onComplete() → yield extra → yield done`
+- 后端 `_utils.runAgentAssistantStream` 的 done 分支顺序固定为：`persistFinal → await onComplete() → yield extra → yield done`
 - `done` 必须是流的最后一个事件
-**反例**（修复前的 bug 行为）:
-- 旧顺序 `yield done → await onComplete → yield extra`
-- 前端 `client.ts:runStream` 收到 `done` 立即 `unsubscribe()` 并 `resolve()`
-- 紧随其后的 `title` 事件在 Electron IPC 路径下被彻底丢弃，节点标题不再自动生成
-- 实测 2026-04-26 用户报"加入工具能力后节点标题就一直失效"
+**历史背景**:
+- 2026-04-26 修复"加入工具能力后节点标题就一直失效"：旧顺序 `yield done → await onComplete → yield extra`，前端 `client.ts:runStream` 收到 `done` 立即 `unsubscribe()`，紧随其后的 `title` 事件在 Electron IPC 路径下被彻底丢弃
+- 2026-04-27 同日两次迭代：先废弃自动触发（移除 onComplete 参数），后又恢复自动触发并重新引入 onComplete；本约束在恢复后再次成为硬约束
 **原因**: IPC 监听器一旦 unsubscribe 就不再接收任何事件；后端 generator 是"推"语义，前端 once-on-done 是"拉"语义，二者只能通过事件顺序保证不冲突
 
 ## E017 · agent 单轮 LLM 流式事件不得攒批
@@ -154,8 +166,23 @@
 - 不 silent 截短：违反 INV-3 引用语义
 **原因**: INV-3 保证的是"分支边截止 sequence 不可变"，但**不保证消息内容不可变**也不保证消息存在。任一对父节点 message 的破坏性操作都需要分支引用守卫——这是 R021 的核心动机
 
+## E020 · mock-server 与 Electron IPC 是两份并行路由表（漂移风险）
+**场景**: 新增/修改一个 API 端点时，只在 `mock-server/src/server.ts` 加路由，浏览器 dev 模式 + 集成测试都正常通过；但 Electron 桌面应用走 `electron/src/ipc.ts` 的 IPC router，找不到端点抛 `404 No route for METHOD /api/...`
+**处理**:
+- 新增/修改任何 API 端点必须**同步改两处**：mock-server (HTTP) + electron/src/ipc.ts (IPC)
+- 错误映射（HTTP status / error code / message 文本）必须严格对齐，否则前端用 `String.includes(errorCode)` 检测会在两条路径行为不一致
+- 带 querystring 的端点（如 `?fromSequence=N`）：电 IPC 路径需在 dispatch 入口用 `URL` API 分离 pathname + searchParams，路由模式（含 `$` 锚）只匹配 pathname
+**原因**: Stage 5 mock-server 是早期产物（HTTP API 浏览器 dev + 测试基础设施）；Stage 7 切到 Electron 后 IPC 桥独立成 ipc.ts。两者都委托到 `src/modules/*` 同一份业务逻辑，"业务漂移"风险有限，但**路由声明会漂移**。集成测试只覆盖 HTTP 路径，IPC 路径的回归只能靠手动验收
+**事故记录**: 2026-04-27 实施"用户消息编辑+重新生成"时，新增 `DELETE /api/nodes/:id/messages` 只在 mock-server 加，Electron 用户编辑按回车直接 404；当天补全 ipc.ts 同款路由 + URL API 解析。改进路径（未实施）：抽共享 `src/contracts/routes.ts` 让两端引用同一份路由声明，从根上消除漂移
+
 ## E018 · 画布 transform 层内不能用 Element.scrollIntoView
 **场景**: 分支跳转时把目标消息滚到视口——目标消息在节点内的 `overflow:auto` 容器里，节点又是 `position:absolute` 嵌在画布的 `transform: translate+scale` 层下
 **处理**: 改为手动定位最近的 `overflow-y:auto/scroll` 祖先（节点的消息列表容器），用 `getBoundingClientRect` 计算相对偏移后调 `container.scrollTo({top, behavior:'smooth'})` 只滚它一个；遍历时校验 `scrollHeight > clientHeight` 避免误判未溢出的容器
 **原因**: `Element.scrollIntoView` 会让**所有**可滚动祖先链都滚动以使元素可见——包括 body / 画布根容器。在 transform 层内，浏览器按渲染后的实际位置计算可见性，会把 body 一起滚走，表现为"父节点顶部被裁切 + 画布下方出现空白裂缝 + minimap 视口框漂移"
 **事故记录**: 2026-04-27 实施分支一键跳转时第一版用 `scrollIntoView({block:'start'})`，用户截图反馈跳转后画布严重错位；当天定位根因并切换为手动滚最近 overflow:auto 祖先方案
+
+## E021 · OpenRouter 思考字段名错配会被静默忽略（D029 根因）
+**场景**: 给 OpenRouter 发的请求体写 `reasoning:{enabled:true}` 而非 `reasoning:{effort:"medium"}`——OpenRouter 不识别 `enabled` 字段，会按"未传 reasoning 配置"处理，思考从未激活；但请求 200 OK，前端看不到任何报错信号
+**处理**: provider 路由分支翻译——`reasoning` 字段格式由 provider 决定（详见 R022），不要假设单一字段名能跨家通用；新增 provider 时必须先查目标家协议文档确认字段
+**原因**: OpenAI 兼容协议各家在"基础 chat/completions" 维度兼容，但思考相关字段是各家私有扩展；OpenRouter 自己也在做"翻译层"——本侧发什么字段决定了 OpenRouter 翻不翻、怎么翻
+**事故记录**: 2026-04-27 用户报告"接入 OpenRouter 后开启思考无效"——实际请求成功但思考从未激活；并存的 SSE 解析侧只读 `delta.reasoning_content`（DeepSeek 私有字段），即便 OpenRouter 真返回思考也读不到。两个根因叠加导致用户看不到任何思考内容

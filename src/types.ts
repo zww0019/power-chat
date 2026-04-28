@@ -54,7 +54,25 @@ export interface Message {
   // null 或 undefined 表示该消息未触发 agent；非空数组 = agent 模式产物。
   // 与 reasoningContent 同样受 INV-11 守卫：不会回灌到下游 LLM 调用。
   agentTrace?: AgentStep[] | null;
+  // 可选：OpenRouter / OpenAI 推理模型回传的结构化 reasoning_details 数组。
+  // 仅供下一轮请求按 provider=openrouter 分支回灌给 LLM 维持思考连续性，不参与渲染——
+  // 渲染统一走 reasoningContent（已由 SSE 解析层把各家协议拍平为纯文本）。
+  reasoningDetails?: ReasoningDetail[] | null;
   createdAt: string;
+}
+
+// OpenRouter 标准化的 reasoning_details 元素。type 字段在多家协议下取值不同，
+// 仅作透传：本地不解析其内部结构，原样回灌即可。
+export interface ReasoningDetail {
+  type: string;
+  id?: string | null;
+  format?: string;
+  index?: number;
+  text?: string;
+  summary?: string;
+  data?: string;
+  signature?: string | null;
+  [key: string]: unknown;
 }
 
 export interface Settings {
@@ -67,17 +85,35 @@ export interface Settings {
   // 留空时工具会返回 tavily_key_not_configured 错误，agent loop 由 LLM 决定如何处理（决策 15 / D004 沿用）
   tavilyApiKey: string;
   thinkingModeEnabled: boolean;
+  // 思考强度三档；llm-client 按 provider 翻译为 reasoning.effort（OpenAI/OpenRouter）
+  // 或 reasoning.enabled（custom 兜底）。新装 db.json 旧数据缺此字段时按 'medium' 兜底。
+  thinkingEffort: ThinkingEffort;
+  // provider 路由 enum：决定请求体 reasoning 字段格式 + 是否回填历史 reasoning_details
+  provider: SettingsProvider;
   privacyAcknowledged: boolean;
 }
+
+export type ThinkingEffort = 'low' | 'medium' | 'high';
+
+// 注：暂只支持 OpenAI 兼容协议；用户用 Claude 时走 'openrouter' 分支即可。
+// 'custom' 是向后兼容兜底——旧 db.json 推断不出 provider 时落到此分支
+export type SettingsProvider = 'openai' | 'deepseek' | 'openrouter' | 'custom';
 
 // SSE 事件
 export type StreamEvent =
   | { type: 'reasoning'; delta: string }
+  // OpenRouter / OpenAI 推理模型的结构化 reasoning_details 增量；
+  // 与 'reasoning' 并行 yield（'reasoning' 给 UI 渲染，本事件给持久化以维持多轮思考连续性）
+  | { type: 'reasoning_details'; delta: ReasoningDetail[] }
   | { type: 'content'; delta: string }
   | { type: 'done'; messageId: string }
   | { type: 'error'; error: string }
-  // 节点标题异步生成完成后推送（属于消息流的副产物，不阻塞 done）
+  // 自动标题生成成功（双轨制中的"自动"轨）：每 3 轮（6 条 message）触发一次。
+  // 必须在 done 之前 yield（IPC 监听器收到 done 即 unsubscribe，trailing 事件会丢失，详见 E016）
   | { type: 'title'; nodeId: string; title: string }
+  // 自动标题生成失败：把领域错误转成简化 code（empty_node / not_configured / llm_failed / unknown），
+  // 前端按 code 映射 toast 文案。与 'title' 同样必须在 done 之前 yield
+  | { type: 'title_error'; nodeId: string; error: string }
   // 内部事件：streamChat 在 native_tools 模式下聚合完成后 yield，
   // 仅 agent.ts 消费（conversation/refine 路径不传 tools，永远不会收到）；
   // 不会被 server.ts 转发到 SSE 响应（无传入路径触达）
@@ -128,6 +164,9 @@ export interface LLMMessage {
   // 仅 role='assistant' 且模型上一轮输出过 reasoning_content 时填写——回传给下一轮调用
   // （DeepSeek-Reasoner 等思考模式协议要求；不带会 400 invalid_request_error）
   reasoningContent?: string | null;
+  // 仅 role='assistant'：OpenRouter 协议下回传给下一轮调用，维持跨轮思考连续性。
+  // 其他 provider（openai/deepseek/custom）不写入请求体——见 toOpenAIMessage 守卫
+  reasoningDetails?: ReasoningDetail[] | null;
   // 仅 role='assistant' 且本轮发起了工具调用时填写——回灌到下一轮 LLM 让模型知道自己请求过哪些工具
   toolCalls?: LLMToolCall[];
   // 仅 role='tool' 时填写——把工具结果回灌时的 OpenAI 协议关联字段
@@ -252,5 +291,36 @@ export class MessageReferencedByBranchError extends Error {
   constructor(public childNodeIds: string[]) {
     super(`Cannot truncate: messages are referenced by ${childNodeIds.length} branch(es).`);
     this.name = 'MessageReferencedByBranchError';
+  }
+}
+
+// 用户主动触发标题重新生成时的领域错误（三类细分）。
+// 路由层（mock-server / ipc.ts）将它们映射为具体 HTTP 状态码与 error code，
+// 前端 toast 根据 error code 给出有针对性的提示而非笼统"失败"。
+//
+// NodeNotFoundError：节点 id 在数据库中查不到（节点被并发删除，或 id 传错）。
+// 路由层映射为 404 not_found。
+export class NodeNotFoundError extends Error {
+  constructor(nodeId: string) {
+    super(`Node not found: ${nodeId}`);
+    this.name = 'NodeNotFoundError';
+  }
+}
+
+// NoMessagesForTitleError：节点存在但没有任何消息，无内容可供 LLM 概括。
+// 路由层映射为 400 empty_node；这是用户操作时序问题，非 LLM 故障。
+export class NoMessagesForTitleError extends Error {
+  constructor() {
+    super('节点尚无对话消息，无法生成标题');
+    this.name = 'NoMessagesForTitleError';
+  }
+}
+
+// TitleGenerationFailedError：LLM 调用返回了空内容（或被快模型清理后为空）。
+// 通常说明快模型配置无效或不可达；路由层映射为 502 llm_failed。
+export class TitleGenerationFailedError extends Error {
+  constructor(reason: string) {
+    super(`Title generation failed: ${reason}`);
+    this.name = 'TitleGenerationFailedError';
   }
 }

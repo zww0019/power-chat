@@ -55,10 +55,13 @@ LLM 三要素 `baseURL`、`model`、`apiKey` **三者皆非空**称为"配置完
 - 四栏 marker 必须用全角中括号 `【】` 包裹，便于前端解析
 - "未解决·待验证" 不可省略——产品对用户的诚实承诺
 
-## 标题节流（Title Throttle）
-节点标题自动生成的触发频率：每节点对话累计满 3 轮（即 6 条 message，user+assistant 各算一条）触发一次。
-- 失败静默
-- 由后端在 sendMessage 完成后异步触发，结果通过 SSE `title` 事件推送给前端
+## 标题双轨生成（Title Dual-Track）
+节点标题在两条独立路径上更新（D006 双轨制）：
+- **自动轨**：每 3 轮对话（messages.length ≥ 6 && % 6 === 0）后端在 `sendMessage.onComplete` 内自动触发，通过 SSE `title` / `title_error` 事件推送给前端
+- **主动轨**：用户随时点击节点 header / 折叠卡 / 大屏 Modal 标题旁 hover 显示的 ↻ 按钮，走独立 `POST /api/nodes/:id/regenerate-title`，一次性返回 `{title}`
+- 共用错误码语义（empty_node / not_configured / not_found / llm_failed / unknown）
+- 永远强制重新生成（两轨都不依赖 node.title 是否已有值）
+- 失败 toast 提示原因（不再静默吞错；旧实现的根因已修复）
 
 ## 快模型 / 主模型
 - **主模型（llmModel）**：用于对话、提炼等高价值场景（默认温度 0.7 / 0.3）
@@ -106,3 +109,23 @@ Agent 与 LLM 之间传递工具调用信号的两种协议：
 
 ## ReAct 循环（ReAct Loop）
 Reasoning + Acting 范式的循环：thought（说出意图）→ action（调工具）→ observation（看结果）→ 重复直至信息足够 → final（最终回复）。是 agent 模式的执行骨架。
+
+## Provider（settings 路由分支）
+LLM 服务方的显式枚举字段，与 baseURL 解耦。当前四档：openai / deepseek / openrouter / custom。
+- 决定"思考字段如何翻译到请求体"（OpenRouter/OpenAI 用 effort，DeepSeek 不传，custom 用旧契约 enabled:true）
+- 决定"历史 reasoning_details 是否回灌下一轮"（仅 OpenRouter 回灌，避免其他中转端点 400）
+- 旧 db.json 缺此字段时按 baseURL 启发式推断一次（含 openrouter.ai → openrouter；含 deepseek.com → deepseek；含 api.openai.com → openai；其他 → custom）；用户改 baseURL 但未显式调 provider 时也会重新推断
+- 不用"按 baseURL 字符串包含判断"路径——provider 字段是用户可视、可手动覆写的设置项，URL 推断仅作兜底
+
+## ThinkingEffort（思考强度）
+Settings 中三档枚举：low / medium（默认）/ high。
+- 仅在 thinkingModeEnabled=true 时生效；UI 在思考开关打开时才显示
+- OpenRouter 路径下直接传 reasoning.effort，由 OpenRouter 内部翻译到底层模型的实际 token 配额（如 Anthropic 的 thinking.budget_tokens、Gemini 的 thinkingLevel）
+- DeepSeek 路径下不映射（DeepSeek-R1 通过模型名激活思考，没有强度档位）
+- custom 路径下不映射（沿用旧契约 reasoning:{enabled:true}，无强度概念）
+
+## reasoning_details（OpenRouter 结构化思考片段）
+OpenRouter 协议下 LLM 流式响应中的结构化数组字段（delta.reasoning_details），元素含 type（reasoning.text / reasoning.summary / reasoning.encrypted）/ text / summary / data / format / id / index 等。
+- **显示路径**：项目统一拍平为纯文本到 Message.reasoningContent，UI 不区分结构（用户决策"思考显示一致"）
+- **回灌路径**：以原始结构持久化在 Message.reasoningDetails，仅在 provider=openrouter 时回灌到下一轮 LLM 入参，维持多轮 + 工具调用场景的思考连续性
+- 对应 SSE 字段并集中的一员：delta.reasoning（OpenRouter 标准化字符串字段）/ delta.reasoning_content（DeepSeek 私有字段）/ delta.reasoning_details（OpenRouter 结构化数组）—— SSE 解析层取并集，命中任一就 yield reasoning 事件

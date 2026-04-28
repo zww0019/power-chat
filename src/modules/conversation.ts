@@ -1,5 +1,5 @@
 // conversation-module
-// 节点内消息发送 + 上下文组装（关键 INV 守卫所在）+ 分支动作 + 标题自动生成。
+// 节点内消息发送 + 上下文组装（关键 INV 守卫所在）+ 分支动作 + 用户主动触发的标题生成。
 //
 // INV-1: 节点对话上下文 = 该节点所有 Message + 入边携带的继承内容
 // INV-2: refined 类型节点不展开 inbound edges 取原节点内容（只用自己的 messages）
@@ -9,7 +9,7 @@
 //                   agentTrace 永不进入下游（R019 协议无关守卫）—— 详见 toLLMMessage 注释
 
 import type { Message, Node, Edge, LLMMessage, StreamEvent } from '../types.js';
-import { MessageReferencedByBranchError, StreamingNodeError } from '../types.js';
+import { MessageReferencedByBranchError, NodeNotFoundError, NoMessagesForTitleError, NotConfiguredError, StreamingNodeError, TitleGenerationFailedError } from '../types.js';
 import { getPersistence } from './persistence.js';
 import * as canvas from './canvas.js';
 import { completeChat } from './llm-client.js';
@@ -109,6 +109,9 @@ async function assembleContextWithLimit(
 function toLLMMessage(m: Message): LLMMessage {
   const out: LLMMessage = { role: m.role, content: m.content };
   if (m.reasoningContent) out.reasoningContent = m.reasoningContent;
+  // reasoningDetails 跨轮回传（仅 OpenRouter 在 toOpenAIMessage 真正写入请求体）：
+  // 即便用户后来切到其他 provider，本字段在 LLMMessage 上无副作用——会被静默忽略
+  if (m.reasoningDetails && m.reasoningDetails.length > 0) out.reasoningDetails = m.reasoningDetails;
   return out;
 }
 
@@ -150,6 +153,7 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
     role: 'assistant',
     content: '',
     reasoningContent: '',
+    reasoningDetails: null,
     sequence: nextSeq + 1,
     status: 'streaming',
     wasResumed: false,
@@ -180,17 +184,31 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
       runAgentLoop({
         initialMessages: messagesWithSystem,
         enableReasoning: settings.thinkingModeEnabled,
+        thinkingEffort: settings.thinkingEffort,
+        provider: settings.provider,
         temperature: 0.7,
         signal: abortCtrl.signal,
       }),
       p,
       asstMsg,
-      // 标题节流：每 3 轮（user+assistant 共 6 条 message）触发一次（D006）
+      // D006 双轨制 · 自动轨：每 3 轮（6 条 message）触发一次标题重生。
+      // 触发条件用"实际消息条数 % 6"而非 sequence 偏移——节点经过截断式删除（E019）后，
+      // sequence 跨过 6 整除位会让旧的 (nextSeq+2)%6 永远不再触发，是用户当初痛点的根因。
+      // 改用 length 直接计数从根上规避此问题。
+      // 失败处理：领域错误转成简化 code 通过 title_error 事件给前端 toast（不再静默吞错）。
+      // 永远强制覆盖（用户已确认接受）：不检查 node.title 是否已有值。
       async () => {
-        const totalMessages = nextSeq + 2;
-        if (totalMessages % 6 !== 0) return null;
-        const newTitle = await updateNodeTitle(params.nodeId).catch(() => null);
-        return newTitle ? { type: 'title', nodeId: params.nodeId, title: newTitle } : null;
+        // 必须重新查而非复用入口处的 existing 快照：streaming 期间 user 消息和 assistant 消息
+        // 都已持久化，existing 是流式开始前的旧快照，count 偏小会导致触发条件漏判。
+        const all = await getMessagesOfNode(params.nodeId);
+        if (all.length < 6 || all.length % 6 !== 0) return null;
+        try {
+          const { title } = await regenerateNodeTitle(params.nodeId);
+          return { type: 'title', nodeId: params.nodeId, title };
+        } catch (e) {
+          const code = classifyTitleError(e);
+          return { type: 'title_error', nodeId: params.nodeId, error: code };
+        }
       },
     );
   } finally {
@@ -199,11 +217,36 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
   }
 }
 
-// 节点标题生成（每 3 轮触发，详见 D006 / R012）
-// 用 settings.llmFastModel 优先，留空回退主模型；temperature=0.2 / max_tokens=30
-async function updateNodeTitle(nodeId: string): Promise<string | null> {
+// 把 regenerateNodeTitle 抛出的领域异常归类成与 HTTP 路由层对齐的简化 code，
+// 让前端可以用同一套字符串匹配（empty_node / not_configured / llm_failed）映射 toast 文案。
+//
+// 共用同一组 code 的原因（D006 双轨制设计意图）：
+// 自动轨（title_error 事件）和主动轨（HTTP 路由层的错误响应）在前端的 toast 处理
+// 走同一份映射函数 titleErrorMessage，所以两条路径必须输出语义一致的 code——
+// 在此统一归类，避免两处各自定义 code 字符串后逐渐出现拼写/语义漂移。
+function classifyTitleError(e: unknown): string {
+  if (e instanceof NoMessagesForTitleError) return 'empty_node';
+  if (e instanceof NotConfiguredError) return 'not_configured';
+  if (e instanceof TitleGenerationFailedError) return 'llm_failed';
+  if (e instanceof NodeNotFoundError) return 'not_found';
+  return 'unknown';
+}
+
+// 用户主动触发的节点标题重新生成（点击节点标题旁的刷新图标）。
+// 设计：永远强制重新生成（即使 node.title 已有值），由用户的点击意图决定。
+// 失败：抛出领域错误（NodeNotFoundError / NoMessagesForTitleError / TitleGenerationFailedError）
+//       或透传 LLM 层异常，由路由层（mock-server / ipc.ts）映射成 4xx / 5xx，前端 toast 显示原因。
+//
+// 用快模型 settings.llmFastModel 优先，留空回退主模型；temperature=0.2 / max_tokens=30。
+export async function regenerateNodeTitle(nodeId: string): Promise<{ title: string }> {
+  const node = await canvas.getNode(nodeId);
+  if (!node) {
+    throw new NodeNotFoundError(nodeId);
+  }
   const messages = await getMessagesOfNode(nodeId);
-  if (messages.length === 0) return null;
+  if (messages.length === 0) {
+    throw new NoMessagesForTitleError();
+  }
   const dialogueText = messages
     .map((m) => `${m.role === 'user' ? '用户' : 'AI'}：${m.content}`)
     .join('\n\n');
@@ -213,17 +256,18 @@ async function updateNodeTitle(nodeId: string): Promise<string | null> {
     { role: 'system', content: TITLE_SYSTEM_PROMPT },
     { role: 'user', content: `请用 8-15 字概括以下对话的主题：\n\n${dialogueText}` },
   ];
-  const title = await completeChat(promptMessages, {
+  const raw = await completeChat(promptMessages, {
     maxTokens: 30,
     temperature: 0.2,
     modelOverride: settings.llmFastModel || undefined,
   });
-  if (!title) return null;
   // 清理常见 LLM 噪音：去前后空白、引号、句末标点
-  const cleaned = title.trim().replace(/^[「『"'\s]+|[」』"'\s。.！!？?]+$/g, '').slice(0, 30);
-  if (!cleaned) return null;
+  const cleaned = raw.trim().replace(/^[「『"'\s]+|[」』"'\s。.！!？?]+$/g, '').slice(0, 30);
+  if (!cleaned) {
+    throw new TitleGenerationFailedError('LLM 未返回有效标题（可能是快模型配置错误或不可达）');
+  }
   await canvas.patchNode(nodeId, { title: cleaned });
-  return cleaned;
+  return { title: cleaned };
 }
 
 // === Prompt 模板（来自视觉规范文档 §4.1 / §4.3）===

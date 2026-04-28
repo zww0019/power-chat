@@ -11,6 +11,8 @@ export const FAKE_SETTINGS_WITH_KEY: Settings = {
   llmApiKey: '',
   tavilyApiKey: 'tvly-test-key',
   thinkingModeEnabled: false,
+  thinkingEffort: 'medium',
+  provider: 'custom',
   privacyAcknowledged: false,
 };
 

@@ -14,6 +14,9 @@ export type {
   Edge,
   Message,
   Settings,
+  SettingsProvider,
+  ThinkingEffort,
+  ReasoningDetail,
   StreamEvent,
   // Agent / Tool 类型（M1 起增量 re-export）
   AgentStep,

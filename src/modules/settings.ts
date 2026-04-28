@@ -2,7 +2,7 @@
 // 持有 Settings 单例。INV-9 提供 isConfigured 守卫。
 // MVP：apiKey 存明文（与 db.json 一起，被 .gitignore 排除）。Stage 7 切 OS keychain。
 
-import type { Settings } from '../types.js';
+import type { Settings, SettingsProvider } from '../types.js';
 import { getPersistence } from './persistence.js';
 
 const DEFAULT_SETTINGS: Settings = {
@@ -12,8 +12,22 @@ const DEFAULT_SETTINGS: Settings = {
   llmApiKey: '',
   tavilyApiKey: '',
   thinkingModeEnabled: false,
+  // 思考强度三档；不同 provider 的 reasoning 字段格式由 llm-client.buildOpenAIRequestBody 翻译
+  thinkingEffort: 'medium',
+  // provider 路由 enum：默认 custom，旧 db.json 升级路径会按 baseURL 启发式推断
+  provider: 'custom',
   privacyAcknowledged: false,
 };
+
+// 由 baseURL 启发式推断 provider；仅 stored 缺字段或 baseURL 变更时使用
+function inferProviderFromBaseUrl(baseUrl: string | undefined): SettingsProvider {
+  const url = (baseUrl || '').toLowerCase();
+  if (!url) return 'custom';
+  if (url.includes('openrouter.ai')) return 'openrouter';
+  if (url.includes('deepseek.com')) return 'deepseek';
+  if (url.includes('api.openai.com')) return 'openai';
+  return 'custom';
+}
 
 export function maskApiKey(key: string): string {
   if (!key) return '';
@@ -23,8 +37,13 @@ export function maskApiKey(key: string): string {
 
 export async function getSettings(): Promise<Settings> {
   const stored = await getPersistence().getSingleton<Settings>();
-  // 兼容旧持久化数据未带 tavilyApiKey 字段（与默认值合并）
-  return stored ? { ...DEFAULT_SETTINGS, ...stored } : { ...DEFAULT_SETTINGS };
+  if (!stored) return { ...DEFAULT_SETTINGS };
+  // 兼容旧持久化数据缺字段：与默认值合并；provider 缺失时按 baseURL 启发式推断
+  const merged: Settings = { ...DEFAULT_SETTINGS, ...stored };
+  if ((stored as Partial<Settings>).provider === undefined) {
+    merged.provider = inferProviderFromBaseUrl(stored.llmBaseUrl);
+  }
+  return merged;
 }
 
 // 对外的 GET 响应：所有 apiKey 类敏感字段脱敏（D004 / R009 治理）
@@ -40,6 +59,11 @@ export async function getSettingsMasked(): Promise<Settings> {
 export async function putSettings(patch: Partial<Settings>): Promise<Settings> {
   const current = await getSettings();
   const merged: Settings = { ...current, ...patch };
+  // baseURL 变更但调用方未显式指定 provider：按新 baseURL 重新推断，
+  // 让用户改 URL 后无需手动调 provider 下拉就能命中正确分支
+  if (patch.llmBaseUrl !== undefined && patch.provider === undefined && patch.llmBaseUrl !== current.llmBaseUrl) {
+    merged.provider = inferProviderFromBaseUrl(patch.llmBaseUrl);
+  }
   await getPersistence().putSingleton(merged);
   return {
     ...merged,

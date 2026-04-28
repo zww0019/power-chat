@@ -171,6 +171,7 @@ export async function* streamRefine(token: string): AsyncIterable<StreamEvent> {
     role: 'assistant',
     content: '',
     reasoningContent: '',
+    reasoningDetails: null,
     sequence: 0,
     status: 'streaming',
     wasResumed: false,
@@ -186,6 +187,8 @@ export async function* streamRefine(token: string): AsyncIterable<StreamEvent> {
       streamChat({
         messages,
         enableReasoning: settings.thinkingModeEnabled,
+        thinkingEffort: settings.thinkingEffort,
+        provider: settings.provider,
         isRefineTask: true,
         temperature: 0.3,
       }),

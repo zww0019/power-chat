@@ -21,7 +21,10 @@
 import type {
   LLMMessage,
   LLMToolCall,
+  ReasoningDetail,
+  SettingsProvider,
   StreamEvent,
+  ThinkingEffort,
   ToolCallMode,
   ToolName,
   AgentStep,
@@ -37,6 +40,9 @@ export interface RunAgentLoopParams {
   // runAgentLoop 在循环内会动态追加 assistant tool_calls 与 tool result 消息
   initialMessages: LLMMessage[];
   enableReasoning: boolean;
+  // 思考强度与 provider 透传给 streamChat；未传由 streamChat 从 settings 兜底
+  thinkingEffort?: ThinkingEffort;
+  provider?: SettingsProvider;
   temperature?: number;
   signal?: AbortSignal;
 }
@@ -121,9 +127,10 @@ export async function* runAgentLoop(params: RunAgentLoopParams): AsyncIterable<S
       return;
     }
 
-    const round = await runOneLLMRound(messages, params, mode);
-    // 把本轮 reasoning / content delta 透传给上游
-    for (const evt of round.passthroughEvents) yield evt;
+    const round = newOneRoundResult();
+    // 流式透传：边消费 LLM 流边 yield content/reasoning 事件，
+    // 不再等整轮跑完才一次性输出（避免前端"长时间等待→突然全部出现"的伪流式表现）
+    yield* runOneLLMRoundStream(messages, params, mode, round);
 
     // 错误事件：abort 路径转换为 agent_final（aborted_by_user）让消息优雅完成；
     // 真错误（network / stream / context overflow）才透传
@@ -153,6 +160,9 @@ export async function* runAgentLoop(params: RunAgentLoopParams): AsyncIterable<S
       // `|| null` 而非直接 reasoningBuf：toOpenAIMessage 用 `if(m.reasoningContent)` falsy 守卫
       // 跳过空字符串；若改为 undefined 则 JSON 序列化会漏掉字段，null 可显式占位
       reasoningContent: round.reasoningBuf || null,
+      // OpenRouter 协议下保持思考连续性：段内 assistant 携带本轮收到的 reasoning_details 数组，
+      // toOpenAIMessage 仅在 provider=openrouter 时回填到请求体（其他 provider 忽略）
+      reasoningDetails: round.reasoningDetailsBuf.length > 0 ? round.reasoningDetailsBuf : null,
       toolCalls: round.toolCalls,
     });
 
@@ -173,8 +183,6 @@ export async function* runAgentLoop(params: RunAgentLoopParams): AsyncIterable<S
 // ============== 单轮 LLM 调用 ==============
 
 interface OneRoundResult {
-  // 透传给上游的 SSE 事件（reasoning + content delta；不含 tool_calls / done）
-  passthroughEvents: StreamEvent[];
   // 本轮 content 累积（用于写入 assistant message）
   contentBuf: string;
   // 本轮 reasoning 累积（用于段内回灌 assistant message 的 reasoning_content 字段）：
@@ -182,6 +190,9 @@ interface OneRoundResult {
   // reasoning_content **必须**回传给后续调用，不传则 400 invalid_request_error。
   // 详见 R020b / E014。仅 native_tools 模式 + enableReasoning=true 路径有内容
   reasoningBuf: string;
+  // 本轮 OpenRouter / OpenAI 推理模型回传的结构化 reasoning_details 累积。
+  // 段内 sub-turn 必须按原结构原样回传给 OpenRouter，否则在工具调用期间会丢思考连续性
+  reasoningDetailsBuf: ReasoningDetail[];
   // 本轮捕获的工具调用（多轮模式：本轮 LLM 决定调哪些工具）
   toolCalls: LLMToolCall[];
   // 本轮 LLM 的 messageId（用于 done 事件）
@@ -190,56 +201,62 @@ interface OneRoundResult {
   errorEvent: StreamEvent | null;
 }
 
-async function runOneLLMRound(
-  messages: LLMMessage[],
-  params: RunAgentLoopParams,
-  mode: ToolCallMode,
-): Promise<OneRoundResult> {
-  const result: OneRoundResult = {
-    passthroughEvents: [],
+function newOneRoundResult(): OneRoundResult {
+  return {
     contentBuf: '',
     reasoningBuf: '',
+    reasoningDetailsBuf: [],
     toolCalls: [],
     messageId: newId('m'),
     errorEvent: null,
   };
+}
+
+// 单轮 LLM 流式消费：边消费 SSE 边 yield reasoning/content delta，
+// 同时把 toolCalls / messageId / errorEvent / 累积 buffer 写到 result（out param）。
+//
+// 改造前是"全部消费完返回 OneRoundResult，passthroughEvents 数组带回上游一次性 yield"——
+// 这种攒批模式下前端会感知不到流式（长时间等待 → 末尾全部出现）。改为 async generator 后
+// 每个 LLM delta 都立即穿透到 _utils.runAgentAssistantStream，再到 IPC，再到前端。
+async function* runOneLLMRoundStream(
+  messages: LLMMessage[],
+  params: RunAgentLoopParams,
+  mode: ToolCallMode,
+  result: OneRoundResult,
+): AsyncIterable<StreamEvent> {
   const tools = mode === 'native_tools' ? getToolsAsOpenAIFormat() : undefined;
   const llmStream = streamChat({
     messages,
     enableReasoning: params.enableReasoning,
+    thinkingEffort: params.thinkingEffort,
+    provider: params.provider,
     tools,
     temperature: params.temperature ?? 0.7,
     signal: params.signal,
   });
 
-  const reactRawText = await consumeLLMRoundStream(llmStream, mode, result);
-  if (mode === 'react_text' && reactRawText) {
-    applyReactTextParsing(reactRawText, result);
-  }
-  return result;
-}
-
-// 消费 LLM 流：分发 reasoning/content/tool_calls/done/error 到 result；返回 react_text 模式累积的整段文本
-async function consumeLLMRoundStream(
-  llmStream: AsyncIterable<StreamEvent>,
-  mode: ToolCallMode,
-  result: OneRoundResult,
-): Promise<string> {
   // react_text 模式下 LLM 以大量细粒度 delta 输出整段 JSON；
   // 用数组收集再 join 避免 O(n²) 的字符串拼接（LLM 输出 token 数越多收益越明显）
   const reactChunks: string[] = [];
   for await (const evt of llmStream) {
     if (evt.type === 'reasoning') {
       // 累积到 reasoningBuf：段内 sub-turn 的 assistant message 必须携带完整 reasoning_content
-      // 才能满足 DeepSeek-Reasoner 协议（R020b）；同时 push 到 passthroughEvents 让前端 UI 实时显示
+      // 才能满足 DeepSeek-Reasoner 协议（R020b）；同时 yield 给前端实时显示
       result.reasoningBuf += evt.delta;
-      result.passthroughEvents.push(evt);
+      yield evt;
+      continue;
+    }
+    if (evt.type === 'reasoning_details') {
+      // OpenRouter 结构化思考片段——段内回灌时必须保持原始结构与顺序，
+      // 不能拍平为字符串；调用方拿到 reasoningDetailsBuf 写到 LLMMessage.reasoningDetails
+      result.reasoningDetailsBuf.push(...evt.delta);
+      yield evt;
       continue;
     }
     if (evt.type === 'content') {
       if (mode === 'native_tools') {
         result.contentBuf += evt.delta;
-        result.passthroughEvents.push(evt);
+        yield evt;
       } else {
         // react_text：累积不透传——整段 JSON 不应展示给用户
         reactChunks.push(evt.delta);
@@ -256,14 +273,23 @@ async function consumeLLMRoundStream(
     }
     if (evt.type === 'error') {
       result.errorEvent = evt;
-      return reactChunks.join('');
+      return;
     }
   }
-  return reactChunks.join('');
+  // react_text 模式后处理：流结束后整段解析并 yield 模拟流式回放
+  if (mode === 'react_text' && reactChunks.length > 0) {
+    yield* streamReactTextParseResult(reactChunks.join(''), result);
+  }
 }
 
-// react_text 模式后处理：从 LLM 整段文本输出解析 JSON，转换为 tool_calls 或流式回放 final
-function applyReactTextParsing(reactRawText: string, result: OneRoundResult): void {
+// react_text 模式：从 LLM 整段文本输出解析 JSON，转换为 toolCalls 或流式回放 final 文本。
+// content delta 在 runOneLLMRoundStream 中被攒批而非实时 yield，原因：react_text 协议
+// 要求 LLM 输出完整 JSON 对象后才能区分"调工具"与"最终回复"——提前 yield 原始 JSON
+// 骨架会把{"thought":...,"action":...} 这类结构字符串暴露给前端。
+async function* streamReactTextParseResult(
+  reactRawText: string,
+  result: OneRoundResult,
+): AsyncIterable<StreamEvent> {
   const parsed = parseReactJson(reactRawText);
   if (parsed?.action) {
     result.toolCalls = [
@@ -276,11 +302,11 @@ function applyReactTextParsing(reactRawText: string, result: OneRoundResult): vo
     result.contentBuf = parsed.thought ?? '';
     return;
   }
-  // 没有调工具（含解析失败兜底）：把 final 字符串或原文拆 chunk 模拟流式回放，让前端体验一致
+  // 没有调工具（含解析失败兜底）：把 final 字符串或原文拆 chunk 流式回放，让前端体验一致
   const finalText = parsed?.final ?? reactRawText;
   result.contentBuf = finalText;
   for (const chunk of chunkText(finalText, 12)) {
-    result.passthroughEvents.push({ type: 'content', delta: chunk });
+    yield { type: 'content', delta: chunk };
   }
 }
 
@@ -390,6 +416,7 @@ async function* finalizeWithSummary(
   for await (const evt of streamChat({
     messages,
     enableReasoning: false,
+    provider: params.provider,
     temperature: 0.5,
     signal: params.signal,
   })) {

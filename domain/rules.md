@@ -215,3 +215,23 @@ xs 12 / sm 13 / base 15 / md 16 / lg 18 / xl 22；fontWeight 启用 400/500/600/
 - **react_text 模式不受约束**：deepseek-reasoner 等推理模型黑名单命中走 react_text 文本协议，不走 native_tools 链路；R020b 仅 native_tools 路径
 - 来源：用户 2026-04-26 实际报错 + DeepSeek 官方文档
 - 最后确认：2026-04-26
+
+## R022 · reasoning 字段按 provider 分支翻译
+- 思考请求体在四个 provider 下采用不同形态，**禁止**用单一字段名跨家发送：
+  - **openrouter**：`reasoning:{effort,exclude:false}`（OpenRouter 内部按底层模型再翻译）
+  - **openai**：`reasoning:{effort,exclude:false}`（o1/o3/gpt-5 系列）
+  - **deepseek**：不写 reasoning 字段（DeepSeek-R1 通过模型名激活，多带反而触发某些中转 400）
+  - **custom**：`reasoning:{enabled:true}`（向后兼容旧契约，自建/未知中转端点保持原行为）
+- 历史 `reasoningDetails` 仅在 provider=openrouter 时回灌请求体的 `reasoning_details` 字段（snake_case）；其他 provider 静默丢弃，避免中转端点拒绝未知字段
+- **不靠 baseURL 字符串包含判断**：provider 是显式枚举，由用户在设置中选择或由初次升级时按 baseURL 启发式推断写入
+- 来源：用户 2026-04-27 报告"接入 OpenRouter 后开启思考无效"——根因是项目早期发的 `reasoning:{enabled:true}` 字段名 OpenRouter 不识别，静默忽略导致思考从未激活
+- 最后确认：2026-04-28
+
+## R023 · OpenRouter 思考连续性多轮回灌
+- OpenRouter 路径下，assistant 历史消息的 `reasoning_details` 数组**必须**按原始结构原样回传给下一轮 LLM 调用（不可拍平、不可重排、不可裁剪），否则在多轮 + 工具调用场景下模型会丢失思考连续性
+- 段内（agent loop tool_calls sub-turn 之间）：与 R020b 并列——同一段内 push assistant tool_calls message 时既要带 reasoningContent 也要带 reasoningDetails
+- 跨段（用户连续发消息）：`Message.reasoningDetails` 持久化，下一轮 `assembleContext` 透传到 `LLMMessage.reasoningDetails`，由 `toOpenAIMessage` 仅在 provider=openrouter 时写入 snake_case 字段
+- SSE 解析层除 yield 拍平后的 reasoning 文本事件外，还要并行 yield 原始 reasoning_details 数组事件，让持久化层保留结构
+- **范围限定 provider=openrouter**：其他 provider 不需要此路径（DeepSeek 走 reasoning_content；OpenAI o1 服务端管理状态；custom 协议未知）
+- 来源：用户 2026-04-27 在阶段 1/2 五问中明确选择"保留思考上下文一起做" + OpenRouter 官方文档 §Preserving Reasoning
+- 最后确认：2026-04-28

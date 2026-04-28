@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Canvas, Node, Edge, Message, StreamingState } from '../types';
+import type { Canvas, Node, Edge, Message, ReasoningDetail, StreamingState } from '../types';
 
 interface CanvasState {
   canvas: Canvas | null;
@@ -41,6 +41,9 @@ interface CanvasActions {
   // 删除指定节点中 sequence ≥ fromSequence 的所有消息（用户编辑触发的本地同步）
   removeMessagesFromSequence: (nodeId: string, fromSequence: number) => void;
   appendMessageContent: (msgId: string, contentDelta: string, reasoningDelta?: string) => void;
+  // 把 OpenRouter / OpenAI 推理模型的 reasoning_details 数组片段累加到消息上，供持久化与多轮回灌使用。
+  // UI 渲染走 reasoningContent 字符串，本字段不影响显示。
+  appendMessageReasoningDetails: (msgId: string, detailsDelta: ReasoningDetail[]) => void;
   finalizeMessage: (msgId: string) => void;
   markMessageError: (msgId: string, errorText: string) => void;
   setActiveNode: (id: string | null) => void;
@@ -181,6 +184,21 @@ export const useCanvasStore = create<Store>()(
                 reasoningContent: reasoningDelta
                   ? (existing.reasoningContent ?? '') + reasoningDelta
                   : existing.reasoningContent,
+              },
+            },
+          };
+        }),
+
+      appendMessageReasoningDetails: (msgId, detailsDelta) =>
+        set((s) => {
+          const existing = s.messages[msgId];
+          if (!existing || detailsDelta.length === 0) return s;
+          return {
+            messages: {
+              ...s.messages,
+              [msgId]: {
+                ...existing,
+                reasoningDetails: [...(existing.reasoningDetails ?? []), ...detailsDelta],
               },
             },
           };
