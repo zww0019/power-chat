@@ -226,17 +226,6 @@ function RefinedNodeFooter({ nodeId, isStreaming, mode }: { nodeId: string; isSt
   );
 }
 
-// 节点内滚动容器的 wheel 拦截（仅 inline 模式生效）：内部还能滚时阻断冒泡防止画布同时平移；
-// 滚到顶/底边界时放行，让画布接管。fullscreen 模式下 Modal 已脱离画布层，无需拦截。
-function handleNodeWheel(e: React.WheelEvent<HTMLDivElement>) {
-  const el = e.currentTarget;
-  const atTop = el.scrollTop <= 0;
-  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-  if (e.deltaY > 0 && atBottom) return;
-  if (e.deltaY < 0 && atTop) return;
-  e.stopPropagation();
-}
-
 function bodyContainerStyle(mode: ChatMode, padding: string): React.CSSProperties {
   if (mode === 'fullscreen') {
     return { padding, flex: 1, minHeight: 0, overflowY: 'auto' };
@@ -269,8 +258,8 @@ function RefinedNodeBody({ nodeId, messages, onActivate, mode }: { nodeId: strin
       ref={containerRef}
       style={bodyContainerStyle(mode, '0')}
       onClick={onActivate}
-      onWheel={mode === 'inline' ? handleNodeWheel : undefined}
       onScroll={onScroll}
+      data-canvas-node-scroll={mode === 'inline' ? '' : undefined}
     >
       <RefinedContent message={refinedMessage} />
       {legacyHistory.length > 0 && <LegacyRefinedHistory messages={legacyHistory} mode={mode} />}
@@ -364,8 +353,8 @@ function DialogueNodeBody({ node, messages, onActivate, mode }: { node: NodeType
       ref={containerRef}
       style={bodyContainerStyle(mode, mode === 'fullscreen' ? `${space.s5}px ${space.s7}px` : `${space.s4}px ${space.s4}px`)}
       onClick={onActivate}
-      onWheel={mode === 'inline' ? handleNodeWheel : undefined}
       onScroll={onScroll}
+      data-canvas-node-scroll={mode === 'inline' ? '' : undefined}
     >
       {messages.length === 0 && (
         <div style={{ color: color.ink400, fontSize: text.sm, fontStyle: 'italic', padding: `${space.s2}px 0` }}>

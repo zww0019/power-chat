@@ -153,8 +153,17 @@ export default function App() {
   const [vy, setVy] = useState(0);
   const [zoom, setZoom] = useState(1);
 
+  // 同步 ref：native wheel handler 闭包外读最新值；RAF 内一帧多写时 setState 异步，
+  // 必须手动同步 ref 才能避免下一帧基于旧值。
+  const vxRef = useRef(vx);
+  const vyRef = useRef(vy);
+  const zoomRef = useRef(zoom);
+
   useEffect(() => {
     if (canvas) {
+      vxRef.current = canvas.viewportX;
+      vyRef.current = canvas.viewportY;
+      zoomRef.current = canvas.viewportZoom;
       setVx(canvas.viewportX);
       setVy(canvas.viewportY);
       setZoom(canvas.viewportZoom);
@@ -186,8 +195,12 @@ export default function App() {
     const d = dragRef.current;
     if (!d) return;
     if (d.kind === 'pan') {
-      setVx(d.startVx + (e.clientX - d.startClientX));
-      setVy(d.startVy + (e.clientY - d.startClientY));
+      const nvx = d.startVx + (e.clientX - d.startClientX);
+      const nvy = d.startVy + (e.clientY - d.startClientY);
+      vxRef.current = nvx;
+      vyRef.current = nvy;
+      setVx(nvx);
+      setVy(nvy);
     } else if (d.kind === 'node') {
       const dx = (e.clientX - d.startClientX) / zoom;
       const dy = (e.clientY - d.startClientY) / zoom;
@@ -282,22 +295,100 @@ export default function App() {
     void createNodeAt((screenX - vx) / zoom, (screenY - vy) / zoom - 80);
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) {
-      const delta = -e.deltaY * 0.001;
-      const next = Math.max(0.25, Math.min(2, zoom + delta));
-      setZoom(next);
-      setViewport(vx, vy, next);
-    } else {
-      const nextVx = vx - e.deltaX;
-      const nextVy = vy - e.deltaY;
-      setVx(nextVx);
-      setVy(nextVy);
-      // 滚轮平移也算用户主动操作视口：必须写回 store + 标记 userHasMovedViewport，
-      // 否则用户用滚轮把画布滚到节点群后重启会被 fit-to-nodes 重新居中覆盖。
-      setViewport(nextVx, nextVy, zoom);
-    }
-  };
+  // 画布 wheel 处理（缩放 + 平移）：原生 addEventListener + {passive:false} 注册以便
+  // preventDefault 阻止浏览器默认滚动；RAF 节流合并同帧多次事件；zustand 写延后到滚轮停止
+  // 150ms 后一次性 flush，避免 wheel 期间高频广播导致全画布订阅者重渲染。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ZOOM_MIN = 0.25;
+    const ZOOM_MAX = 2;
+    const ZOOM_K = 0.0015;       // 指数映射系数：每像素滚动对应恒定百分比缩放
+    const DELTA_CLAMP = 50;      // 设备归一化：触控板≈±3、鼠标≈±100~150，clamp 到统一量级
+    // 150ms 比典型触控板惯性滚动（约 300–500ms）短得多，但比单次 RAF（16ms）长两个数量级，
+    // 足以合并一次连续滑动的全部事件，同时不让用户感知到"状态落盘延迟"。
+    const PERSIST_DEBOUNCE = 150;
+
+    const accum = { zoomDeltaY: 0, panDx: 0, panDy: 0, pivotX: 0, pivotY: 0 };
+    let rafId: number | null = null;
+    let persistTimer: number | null = null;
+
+    const flushPersist = () => {
+      setViewport(vxRef.current, vyRef.current, zoomRef.current);
+      persistTimer = null;
+    };
+    const schedulePersist = () => {
+      if (persistTimer != null) clearTimeout(persistTimer);
+      persistTimer = window.setTimeout(flushPersist, PERSIST_DEBOUNCE);
+    };
+
+    // RAF 帧回调：把本帧内累积的所有 wheel 事件合并为一次状态更新。
+    // 命名为 flush 以区别于 flushPersist——前者刷新 React state（驱动渲染），
+    // 后者刷新 zustand store（驱动持久化），两者时机不同不可混淆。
+    const flush = () => {
+      rafId = null;
+      let nextVx = vxRef.current;
+      let nextVy = vyRef.current;
+      let nextZoom = zoomRef.current;
+
+      if (accum.zoomDeltaY !== 0) {
+        const dy = Math.max(-DELTA_CLAMP, Math.min(DELTA_CLAMP, accum.zoomDeltaY));
+        // 指数映射：避免线性加法在高缩放下"加速失控"
+        nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomRef.current * Math.exp(-dy * ZOOM_K)));
+        // 围绕鼠标基点缩放：保持 pivot 处的逻辑坐标不变，鼠标"贴住"画布内容
+        // 推导：logicCoord = (pivot - v) / zoom；newV = pivot - logicCoord * nextZoom
+        //        化简得 newV = pivot - (pivot - v) * (nextZoom / zoom)
+        // pivot 取批次内最后一次 wheel 事件坐标（而非第一次）：惯性结束位置更接近用户手指/光标实际位置，
+        // 视觉上比用第一次坐标"贴合"感更强。
+        const zoomRatio = nextZoom / zoomRef.current;
+        nextVx = accum.pivotX - (accum.pivotX - vxRef.current) * zoomRatio;
+        nextVy = accum.pivotY - (accum.pivotY - vyRef.current) * zoomRatio;
+        accum.zoomDeltaY = 0;
+      }
+      if (accum.panDx !== 0 || accum.panDy !== 0) {
+        nextVx -= accum.panDx;
+        nextVy -= accum.panDy;
+        accum.panDx = 0;
+        accum.panDy = 0;
+      }
+
+      if (nextZoom !== zoomRef.current) { zoomRef.current = nextZoom; setZoom(nextZoom); }
+      if (nextVx !== vxRef.current) { vxRef.current = nextVx; setVx(nextVx); }
+      if (nextVy !== vyRef.current) { vyRef.current = nextVy; setVy(nextVy); }
+      schedulePersist();
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      // 节点内滚动容器豁免（非缩放手势）：让节点自己消费 wheel，画布不响应；
+      // 缩放手势 (ctrl/⌘) 在节点上仍穿透到画布，保留"节点上按修饰键缩放画布"的快捷手势。
+      const target = e.target as Element | null;
+      if (target?.closest?.('[data-canvas-node-scroll]') && !(e.ctrlKey || e.metaKey)) return;
+
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      if (e.ctrlKey || e.metaKey) {
+        accum.zoomDeltaY += e.deltaY;
+        accum.pivotX = e.clientX - rect.left;
+        accum.pivotY = e.clientY - rect.top;
+      } else {
+        accum.panDx += e.deltaX;
+        accum.panDy += e.deltaY;
+      }
+      if (rafId == null) rafId = requestAnimationFrame(flush);
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      if (rafId != null) cancelAnimationFrame(rafId);
+      if (persistTimer != null) {
+        clearTimeout(persistTimer);
+        // 组件卸载后 debounce timer 的回调不会再执行（window.setTimeout 被 clear 了），
+        // 必须在此同步写入一次，否则最后一批 wheel 操作的视口变化会永久丢失。
+        flushPersist();
+      }
+    };
+  }, [setViewport]);
 
   const handleRefineClick = () => {
     if (selectedNodeIds.length === 0) return;
@@ -569,7 +660,6 @@ export default function App() {
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={handleBackgroundDoubleClick}
-        onWheel={handleWheel}
         style={{
           position: 'absolute',
           inset: 0,
