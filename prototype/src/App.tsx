@@ -702,7 +702,9 @@ export default function App() {
             height: 1,
           }}
         >
-          {/* SVG 边层 */}
+          {/* SVG 边层：zIndex 0 与节点 div 的 zIndex 1 配合，让连线稳定落在节点之下。
+              不依赖 DOM 顺序的隐式层叠（之前发生过：折叠节点 overflow:hidden 建立新 stacking context
+              后，浏览器在某些缩放/层叠场景下会把连线浮到节点上面，遮住卡片文字）。 */}
           <svg
             style={{
               position: 'absolute',
@@ -712,6 +714,7 @@ export default function App() {
               height: 20000,
               pointerEvents: 'none',
               overflow: 'visible',
+              zIndex: 0,
             }}
           >
             <g transform="translate(10000, 10000)">

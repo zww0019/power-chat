@@ -1,13 +1,12 @@
 import type { Node } from '../types';
+import { getNodeSize } from './node-dimensions';
 
 // 边的几何计算：纯函数，无 React/SVG 依赖，便于单测。
 // Edge.tsx 仅负责 SVG 渲染与命中区，几何坐标全部委托给本文件。
-
-export const EXPANDED_W = 360;
-export const EXPANDED_H = 200;
-export const COLLAPSED_W = 200;
-export const COLLAPSED_H_DIALOGUE = 56;
-export const COLLAPSED_H_REFINED = 60;
+//
+// 节点尺寸来源统一在 node-dimensions.ts。chooseAnchors 接受 sizeFn 参数，
+// 由调用方注入，是为了让"折叠对话节点是否有分支来源"这一只能从 store 派生
+// 的信息穿过纯函数边界，同时保持本文件不依赖 store。
 
 export type AnchorSide = 'top' | 'right' | 'bottom' | 'left';
 
@@ -17,21 +16,20 @@ export interface Anchor {
   side: AnchorSide;
 }
 
-// 折叠高度取自各卡片类型折叠态的实测渲染高度，而非估算值，
-// 避免锚点落在卡片可见区域之外导致边线起点悬空。
-export function nodeBox(n: Node): { w: number; h: number } {
-  if (n.collapsed) {
-    return {
-      w: COLLAPSED_W,
-      h: n.type === 'refined' ? COLLAPSED_H_REFINED : COLLAPSED_H_DIALOGUE,
-    };
-  }
-  return { w: EXPANDED_W, h: EXPANDED_H };
-}
+export type NodeSizeFn = (node: Node) => { w: number; h: number };
 
-export function chooseAnchors(parent: Node, child: Node): { p: Anchor; c: Anchor } {
-  const pBox = nodeBox(parent);
-  const cBox = nodeBox(child);
+// 默认尺寸：折叠对话节点按"无分支来源"的最小高度返回。
+// 仅用于调用方无法传入 sizeFn 时的保守兜底；生产渲染路径
+// 由 Edge.tsx 注入查过 store 的 sizeFn，不走此默认值。
+const defaultSizeFn: NodeSizeFn = (n) => getNodeSize(n, false);
+
+export function chooseAnchors(
+  parent: Node,
+  child: Node,
+  sizeFn: NodeSizeFn = defaultSizeFn,
+): { p: Anchor; c: Anchor } {
+  const pBox = sizeFn(parent);
+  const cBox = sizeFn(child);
   const pcx = parent.positionX + pBox.w / 2;
   const pcy = parent.positionY + pBox.h / 2;
   const ccx = child.positionX + cBox.w / 2;

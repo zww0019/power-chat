@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Crosshair } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 import { computeFitToNodesViewport } from './viewport-fit';
+import {
+  COLLAPSED_NODE_W,
+  COLLAPSED_DIALOGUE_WITH_SOURCE_H,
+  COLLAPSED_REFINED_H,
+  EXPANDED_NODE_W,
+} from './node-dimensions';
 import { color, radius, shadow } from '../styles/theme';
 
 // 画布右下角的全局预览小视窗：
@@ -37,11 +43,16 @@ export function Minimap() {
   const viewLogicalH = winSize.h / zoom;
 
   const allNodes = Object.values(nodes);
-  const nodeEstimates = allNodes.map((n) => ({
-    node: n,
-    w: n.collapsed ? 200 : 360,
-    h: n.collapsed ? 60 : 360,
-  }));
+  // 折叠态高度走 node-dimensions 单一来源；对话节点按"带来源行"的 88px 兜底，
+  // 保证 bbox 永远不会比真实卡片小（缩略图宁可略松也不能漏切）。
+  // 展开态高度由消息数量动态决定，这里取 360 作为估算上限，与几何层 EXPANDED_NODE_H=200
+  // 不同——后者用于锚点中线计算，前者用于 bbox 兜底，两者关心的"高度"语义不同。
+  const EXPANDED_ESTIMATE_H = 360;
+  const nodeEstimates = allNodes.map((n) => {
+    if (!n.collapsed) return { node: n, w: EXPANDED_NODE_W, h: EXPANDED_ESTIMATE_H };
+    const h = n.type === 'refined' ? COLLAPSED_REFINED_H : COLLAPSED_DIALOGUE_WITH_SOURCE_H;
+    return { node: n, w: COLLAPSED_NODE_W, h };
+  });
   let minX = viewLogicalX;
   let minY = viewLogicalY;
   let maxX = viewLogicalX + viewLogicalW;

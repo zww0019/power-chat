@@ -85,9 +85,11 @@
 
 ### 节点几何（不可变量）
 - 折叠态宽 200px / 展开态宽 360px（任何场景不得突破）
+- 折叠态高度（连线锚点必须按真实高度计算，否则曲线穿越卡片正面遮盖文字）：对话节点无来源行 68px、对话节点带"分支自《》"来源行 88px、提炼节点 72px
 - 展开态 header 高 44px / 大屏 Modal header 高 60px
 - 边框：默认 ink-200 0.5px / refined accent-300 1px / active accent-500 1.5px / selected moss-500 1.5px；阴影默认 shadow.md / active shadow.lg
 - 提炼节点顶部 3px 焦糖渐变饰条（accent-400 → accent-500）
+- 节点尺寸单一事实源：`prototype/src/canvas/node-dimensions.ts`，渲染层（Node.tsx）与连线几何层（edge-geometry.ts）必须共用此处常量
 
 ### 大屏 Modal（节点 fullscreen）
 - 容器 `min(72vw, 920px) × min(82vh, 820px)`；遮罩 `rgba(42,40,32,0.45)` + backdrop-blur 6px；圆角 radius.xl
@@ -102,7 +104,7 @@
 
 ### Minimap
 - 右下角 fixed，200×132，背景 `rgba(251,249,242,0.82)` + backdrop-blur 20px、圆角 radius.lg、阴影 shadow.md
-- 节点矩形按 bbox 等比缩放（折叠估 200×60、展开估 360×360）；视口框 accent-500 描边 1.25px + 填充 alpha 0.08
+- 节点矩形按 bbox 等比缩放：折叠对话节点按最大可能高度 88 兜底（≥实际 68/88 任一）、折叠提炼节点 72、展开节点估算 360×360；尺寸常量统一从 `node-dimensions.ts` 引入。视口框 accent-500 描边 1.25px + 填充 alpha 0.08
 
 ### 顶部工具栏（三段式 floating bar）
 - 左 Logo 胶囊 / 中提炼按钮（多选时出现，焦糖渐变 + shadow.accent）/ 右状态条 + 帮助 + 设置

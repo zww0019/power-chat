@@ -7,6 +7,7 @@ import { NodeChatPanel } from './NodeChatPanel';
 import { performRetryRefine, focusNodeOnMessage } from './nodeActions';
 import { useTitleRegeneration } from './useTitleRegeneration';
 import { color, text, space, radius, shadow, font, motion } from '../styles/theme';
+import { COLLAPSED_NODE_W, COLLAPSED_REFINED_H, getCollapsedDialogueHeight } from './node-dimensions';
 
 // 摘要长度：折叠卡/header 横幅都用同一个值。25 字在 200/360px 宽度下能容纳一行不溢出
 const SOURCE_SUMMARY_MAX = 25;
@@ -57,6 +58,8 @@ function buildNodeStyle(node: NodeType, isActive: boolean, isSelected: boolean, 
     borderRadius: radius.lg,
     boxShadow: isActive ? shadow.lg : shadow.md,
     opacity: dimmed ? 0.92 : 1,
+    // z-index: 1 让节点稳定盖在 SVG 边层（zIndex 0）之上，不依赖 DOM 顺序的隐式层叠。
+    zIndex: 1,
     transformOrigin: 'top left',
     transition: `border-color ${motion.durBase}ms ${motion.easeOutSoft}, box-shadow ${motion.durBase}ms ${motion.easeOutSoft}, opacity ${motion.durBase}ms ${motion.easeOutSoft}, transform ${motion.durFast}ms ${motion.easeOutSoft}`,
     fontFamily: font.sans,
@@ -411,11 +414,11 @@ function CollapsedDialogueCard({ node, isStreaming, isActive, styleBase, message
   const title = node.title ?? '新节点';
   const branchSource = useCanvasStore((s) => selectBranchSourceOfNode(s, node.id));
   const hasSource = !!branchSource;
-  // 三行卡（多了来源行）需要更高的高度避免内容裁切
-  const cardHeight = hasSource ? 88 : 68;
+  // 高度由 node-dimensions 单一来源管理：渲染层与连线几何层共用同一个数字。
+  const cardHeight = getCollapsedDialogueHeight(hasSource);
   return (
     <div
-      style={{ ...styleBase, ...collapsedShellBase, width: 200, height: cardHeight }}
+      style={{ ...styleBase, ...collapsedShellBase, width: COLLAPSED_NODE_W, height: cardHeight }}
       onPointerDown={(e) => onPointerDownHeader(e, node.id)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -547,7 +550,7 @@ function CollapsedRefinedCard({ node, isStreaming, isActive, styleBase, messageC
   const statusDesc = messageCount > 0 ? '已提炼，点击查看' : '等待提炼…';
   return (
     <div
-      style={{ ...styleBase, ...collapsedShellBase, width: 200, height: 72 }}
+      style={{ ...styleBase, ...collapsedShellBase, width: COLLAPSED_NODE_W, height: COLLAPSED_REFINED_H }}
       onPointerDown={(e) => onPointerDownHeader(e, node.id)}
     >
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: text.xs, color: color.accent600 }}>

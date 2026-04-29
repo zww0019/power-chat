@@ -1,5 +1,7 @@
 import type { Node, Edge } from '../types';
 import { chooseAnchors, buildBezierPath } from './edge-geometry';
+import { getNodeSize } from './node-dimensions';
+import { useCanvasStore, selectBranchSourceOfNode } from '../store/canvasStore';
 import { color } from '../styles/theme';
 
 interface EdgeProps {
@@ -21,7 +23,16 @@ const HITBOX_WIDTH = 14;
 const DELETE_BTN_RADIUS = 10;
 
 export function EdgeLine({ edge, parent, child, isSelected, onSelect, onDelete }: EdgeProps) {
-  const { p, c } = chooseAnchors(parent, child);
+  // 折叠态对话节点的"分支来源"行决定卡片高度（68 vs 88），从 store 派生。
+  // 两个节点合并为一次订阅，避免每条边发起两次独立 selector 调用；
+  // 返回原始 boolean 值，zustand 做严格相等比较，只有 true/false 真正切换时才重渲染。
+  // selectBranchSourceOfNode 内部做 Object.values 全量遍历，订阅次数直接影响每帧开销。
+  const { parentHasBranchSource, childHasBranchSource } = useCanvasStore((s) => ({
+    parentHasBranchSource: !!selectBranchSourceOfNode(s, parent.id),
+    childHasBranchSource: !!selectBranchSourceOfNode(s, child.id),
+  }), (a, b) => a.parentHasBranchSource === b.parentHasBranchSource && a.childHasBranchSource === b.childHasBranchSource);
+  const sizeFn = (n: Node) => getNodeSize(n, n.id === parent.id ? parentHasBranchSource : childHasBranchSource);
+  const { p, c } = chooseAnchors(parent, child, sizeFn);
   const path = buildBezierPath(p, c);
   const mx = (p.x + c.x) / 2;
   const my = (p.y + c.y) / 2;
