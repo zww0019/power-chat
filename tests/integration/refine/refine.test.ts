@@ -163,3 +163,50 @@ describe('refine: INV-2 提炼节点的减熵', () => {
     // 当前 mock 模式无 spy 注入；Stage 7 加依赖注入后启用
   });
 });
+
+describe('refine: 提炼节点不再支持直接发消息', () => {
+  // UI 已用"继续追问"按钮替换输入框（孵化对话子节点继承提炼输出），
+  // 后端守卫为防御层：旧客户端/绕过前端的调用被拒绝，确保"提炼即终态"语义。
+  it('在提炼节点上 POST /messages 应立即返回 error 事件', async () => {
+    const a = await createNodeWithContent('素材');
+    const r = await api<any>('/api/refine', {
+      method: 'POST',
+      body: JSON.stringify({ sourceNodeIds: [a], intentQuestion: null }),
+      expectStatus: 201,
+    });
+    await consumeSSE(r.streamUrl);
+    const events = await consumeSSE(`/api/nodes/${r.node.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '能不能再展开第二点' }),
+    });
+    const err = events.find((e) => e.type === 'error') as any;
+    expect(err).toBeTruthy();
+    expect(err.error).toBe('cannot_send_to_refined_node');
+    // 确认未产生 user_persisted / done（即没有真的写入消息）
+    expect(events.find((e) => e.type === 'user_persisted')).toBeUndefined();
+    expect(events.find((e) => e.type === 'done')).toBeUndefined();
+  });
+
+  it('在提炼节点上 branchNode 应正常工作（继续追问的底层路径）', async () => {
+    const a = await createNodeWithContent('素材');
+    const r = await api<any>('/api/refine', {
+      method: 'POST',
+      body: JSON.stringify({ sourceNodeIds: [a], intentQuestion: null }),
+      expectStatus: 201,
+    });
+    const streamEvents = await consumeSSE(r.streamUrl);
+    const done = streamEvents.find((e) => e.type === 'done') as any;
+    expect(done).toBeTruthy();
+    // 在提炼节点的 assistant 消息上孵化对话子节点
+    const branch = await api<any>('/api/nodes/branch', {
+      method: 'POST',
+      body: JSON.stringify({ parentNodeId: r.node.id, fromMessageId: done.messageId }),
+      expectStatus: 201,
+    });
+    expect(branch.node.type).toBe('dialogue');
+    expect(branch.edge.edgeKind).toBe('branch');
+    expect(branch.edge.parentNodeId).toBe(r.node.id);
+    expect(branch.edge.inheritedUntilSequence).toBe(0);
+  });
+});

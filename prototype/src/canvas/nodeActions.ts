@@ -380,6 +380,9 @@ export async function performRetryRefine(refinedNodeId: string): Promise<void> {
     alert('找不到提炼来源节点，无法重新提炼');
     return;
   }
+  // 在 try 外声明，让 catch 分支也能在网络异常时翻回卡死状态
+  let createdNodeId: string | null = null;
+  let createdMsgId: string | null = null;
   try {
     const { node: refinedNode, edges, streamUrl } = await api.refine({
       sourceNodeIds: sourceIds,
@@ -390,6 +393,8 @@ export async function performRetryRefine(refinedNodeId: string): Promise<void> {
     edges.forEach(store.upsertEdge);
 
     const msgId = newMsgId();
+    createdNodeId = refinedNode.id;
+    createdMsgId = msgId;
     store.upsertMessage({
       id: msgId,
       nodeId: refinedNode.id,
@@ -407,6 +412,51 @@ export async function performRetryRefine(refinedNodeId: string): Promise<void> {
     store.setStreaming(refinedNode.id, 'idle');
   } catch (e) {
     console.error('retry refine failed', e);
+    // 网络异常 / fetch 抛错路径：SSE 流没起来，applyStreamEvent 不会被触发，
+    // 必须显式翻回 streaming 并把消息标 error，避免节点永久卡在"提炼中"。
+    const store = useCanvasStore.getState();
+    if (createdNodeId) store.setStreaming(createdNodeId, 'idle');
+    if (createdMsgId) store.markMessageError(createdMsgId, (e as Error).message ?? String(e));
     alert(`重新提炼失败：${(e as Error).message ?? e}`);
+  }
+}
+
+/**
+ * 在提炼节点上"继续追问"：孵化一个常规对话子节点，挂一条 branch 边继承提炼输出。
+ *
+ * 复用 conversation.branchNode 后端接口，语义一致：
+ * - 父=提炼节点，子=新建 dialogue 节点
+ * - inheritedUntilSequence = 提炼节点 assistant 消息（提炼输出那条）的 sequence
+ * - assembleContextWithLimit 回溯到 refined 父时走 INV-2 守卫，只取该节点自身 messages
+ *   → 子节点上下文 = 仅提炼输出 + 子节点新对话，与"提炼即减熵起点"语义一致
+ *
+ * UI 行为与"分支自助手消息"对齐（commit f1def36 一键直达大屏）：upsertNode/Edge → openFullscreen → pan 视口。
+ */
+export async function performAskOnRefined(refinedNodeId: string): Promise<void> {
+  const store = useCanvasStore.getState();
+  const messages = Object.values(store.messages)
+    .filter((m) => m.nodeId === refinedNodeId && m.role === 'assistant')
+    .sort((a, b) => a.sequence - b.sequence);
+  const lastAssistant = messages[messages.length - 1];
+  if (!lastAssistant) {
+    toast.error('提炼尚未完成，无法继续追问');
+    return;
+  }
+  if (lastAssistant.status === 'streaming') {
+    toast.error('提炼仍在进行中，请等待完成');
+    return;
+  }
+  try {
+    const { node, edge } = await api.branchNode({ parentNodeId: refinedNodeId, fromMessageId: lastAssistant.id });
+    store.upsertNode(node);
+    store.upsertEdge(edge);
+    store.openFullscreen(node.id);
+    const zoom = store.canvas?.viewportZoom ?? 1;
+    const nodeCenterX = node.positionX + 180;
+    const nodeCenterY = node.positionY + 120;
+    store.setViewport(window.innerWidth / 2 - nodeCenterX * zoom, window.innerHeight / 2 - nodeCenterY * zoom, zoom);
+  } catch (e) {
+    console.error('ask on refined failed', e);
+    toast.error(`继续追问失败：${(e as Error).message ?? e}`);
   }
 }

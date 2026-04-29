@@ -127,6 +127,12 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
     yield { type: 'error', error: `node_not_found: ${params.nodeId}` };
     return;
   }
+  // 提炼节点不再支持直接追问：UI 上已用"继续追问"按钮替换输入框（孵化对话子节点继承提炼输出）。
+  // 后端守卫为防御层——前端绕过/旧客户端误调时统一拒绝，避免破坏"提炼即终态"的语义。
+  if (node.type === 'refined') {
+    yield { type: 'error', error: 'cannot_send_to_refined_node' };
+    return;
+  }
 
   const p = getPersistence();
   const existing = await getMessagesOfNode(params.nodeId);

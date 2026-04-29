@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
-import { Pencil, Copy, GitBranch, Info, ChevronDown, ChevronRight, Brain, CornerDownRight, Loader2 } from 'lucide-react';
+import { Pencil, Copy, GitBranch, ChevronDown, ChevronRight, Brain, CornerDownRight, Loader2, MessageSquarePlus } from 'lucide-react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchesFromMessage, selectIsMessageReferencedByBranch } from '../store/canvasStore';
 import { toast } from '../store/toastStore';
 import type { Node as NodeType, Message } from '../types';
 import { RefinedContent } from './RefinedContent';
 import { MarkdownContent } from './MarkdownContent';
 import { AgentTrace } from './AgentTrace';
-import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, performEditMessage } from './nodeActions';
+import { performSendMessage, performBranch, performAbort, focusNodeOnMessage, performEditMessage, performAskOnRefined } from './nodeActions';
 import { useStickyBottom } from './useStickyBottom';
 import { color, text, space, radius, shadow, motion } from '../styles/theme';
 
@@ -162,17 +162,67 @@ export function NodeChatPanel({ node, isStreaming, mode }: NodeChatPanelProps) {
       ) : (
         <DialogueNodeBody node={node} messages={messages} onActivate={handleActivate} mode={mode} />
       )}
-      <NodeFooter
-        isRefined={isRefined}
-        isStreaming={isStreaming}
-        draft={draft}
-        setDraft={setDraft}
-        handleKeyDown={handleKeyDown}
-        onActivate={handleActivate}
-        inputRef={inputRef}
-        mode={mode}
-      />
+      {isRefined ? (
+        <RefinedNodeFooter nodeId={node.id} isStreaming={isStreaming} mode={mode} />
+      ) : (
+        <NodeFooter
+          isStreaming={isStreaming}
+          draft={draft}
+          setDraft={setDraft}
+          handleKeyDown={handleKeyDown}
+          onActivate={handleActivate}
+          inputRef={inputRef}
+          mode={mode}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * 提炼节点底部的"继续追问"按钮，替代原输入框。
+ * 点击后调 performAskOnRefined：孵化常规对话子节点（branch 边继承提炼输出）+ 直达大屏。
+ * 流式期间禁用，避免在提炼未完成时产生半成品分支。
+ *
+ * @param mode - 决定内边距规格；fullscreen 用更宽的侧边距以匹配大屏容器的文本行宽。
+ */
+function RefinedNodeFooter({ nodeId, isStreaming, mode }: { nodeId: string; isStreaming: boolean; mode: ChatMode }) {
+  const [hover, setHover] = useState(false);
+  const padding = mode === 'fullscreen' ? `${space.s4}px ${space.s7}px ${space.s5}px` : `${space.s3}px ${space.s4}px ${space.s4}px`;
+  const disabled = isStreaming;
+  const bg = hover && !disabled ? color.accent50 : 'transparent';
+  return (
+    <div style={{ borderTop: `0.5px solid ${color.accent200}`, padding, background: color.warm }}>
+      <button
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); performAskOnRefined(nodeId); }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        disabled={disabled}
+        title={disabled ? '提炼仍在进行中，请等待完成' : '基于提炼结果开启新对话（不带入原节点完整对话）'}
+        style={{
+          width: '100%',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          padding: `${space.s2}px ${space.s4}px`,
+          borderRadius: radius.md,
+          border: `1px dashed ${color.accent400}`,
+          background: bg,
+          color: disabled ? color.ink400 : color.accent700,
+          fontSize: text.sm,
+          fontWeight: 500,
+          fontFamily: 'inherit',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: disabled ? 0.6 : 1,
+          transition: `background ${motion.durFast}ms ${motion.easeInOut}`,
+        }}
+      >
+        <MessageSquarePlus size={14} strokeWidth={1.8} />
+        基于此提炼继续追问
+      </button>
+    </div>
   );
 }
 
@@ -195,14 +245,21 @@ function bodyContainerStyle(mode: ChatMode, padding: string): React.CSSPropertie
 }
 
 function RefinedNodeBody({ nodeId, messages, onActivate, mode }: { nodeId: string; messages: Message[]; onActivate: () => void; mode: ChatMode }) {
-  // 提炼节点支持追问（用户可在提炼结果下继续发消息），追问后 messages 末尾会追加 user 轮，
-  // 因此不能直接取最后一条，必须反向遍历跳过追问才能找到最新的 assistant 消息。
-  let lastAssistant: Message | null = null;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.role === 'assistant') { lastAssistant = messages[i]!; break; }
+  // 提炼纲要恒为 sequence=0 的 assistant 消息（refine.streamRefine 与 RefinePopover 乐观消息均落 sequence=0）。
+  // 砍掉直接聊天后新场景只剩这一条；旧数据若有 sequence>0 的 user/assistant 是历史追问遗留，进 LegacyHistory 展示。
+  // 三个变量通过单遍完成分类，避免 find + filter + sort 各遍历一次（n 虽小，语义更明确）。
+  let refinedMessage: Message | null = null;
+  const legacyHistory: Message[] = [];
+  for (const m of messages) {
+    if (m.sequence === 0 && m.role === 'assistant') {
+      refinedMessage = m;
+    } else if (m.sequence > 0) {
+      legacyHistory.push(m);
+    }
   }
-  // 提炼节点流式增量可能落在 content / reasoningContent / agentTrace 三个字段任意一个。
-  const stickySignal = `${lastAssistant?.content?.length ?? 0}:${lastAssistant?.reasoningContent?.length ?? 0}:${lastAssistant?.agentTrace?.length ?? 0}`;
+  legacyHistory.sort((a, b) => a.sequence - b.sequence);
+  // 流式增量可能落在 content / reasoningContent / agentTrace 任一字段。
+  const stickySignal = `${refinedMessage?.content?.length ?? 0}:${refinedMessage?.reasoningContent?.length ?? 0}:${refinedMessage?.agentTrace?.length ?? 0}`;
   // resetKey：本节点是否处于大屏态。inline ↔ fullscreen 切换时 inline 侧组件不卸载，
   // 需主动通过 resetKey 把 sticky 翻回 true（fullscreen 侧每次新挂载，天然 true）。
   const isThisNodeFullscreen = useCanvasStore((s) => s.fullscreenNodeId === nodeId);
@@ -215,7 +272,80 @@ function RefinedNodeBody({ nodeId, messages, onActivate, mode }: { nodeId: strin
       onWheel={mode === 'inline' ? handleNodeWheel : undefined}
       onScroll={onScroll}
     >
-      <RefinedContent message={lastAssistant} />
+      <RefinedContent message={refinedMessage} />
+      {legacyHistory.length > 0 && <LegacyRefinedHistory messages={legacyHistory} mode={mode} />}
+    </div>
+  );
+}
+
+/**
+ * 旧数据兼容：refined 节点上历史追问消息的只读折叠区。
+ *
+ * 由于"refined 节点支持继续聊天"已被砍掉，新场景下 refined 节点只有 sequence=0 的提炼纲要；
+ * 但本次改动不删除旧数据，旧的 user/assistant 历史消息仍在数据库里——这里以折叠区方式只读展示，
+ * 让用户能回看以前在该节点上聊过什么。默认收起，避免污染纲要主体的视觉。
+ *
+ * @param messages - 调用方传入 sequence > 0 的消息子集，已按 sequence 升序排列；
+ *                   此组件不再做筛选/排序，保持单一职责。
+ * @param mode      - 决定内边距规格（fullscreen 用更宽的侧边距以适应大屏容器）。
+ */
+function LegacyRefinedHistory({ messages, mode }: { messages: Message[]; mode: ChatMode }) {
+  const [expanded, setExpanded] = useState(false);
+  const padding = mode === 'fullscreen' ? `${space.s3}px ${space.s7}px` : `${space.s2}px ${space.s4}px`;
+  return (
+    <div style={{ borderTop: `0.5px dashed ${color.accent200}`, marginTop: space.s3, padding, background: color.warm }}>
+      <button
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+        style={{
+          width: '100%',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: `${space.s1}px 0`,
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          color: color.accent700,
+          fontSize: text.xs,
+          fontFamily: 'inherit',
+          textAlign: 'left',
+        }}
+      >
+        {expanded ? <ChevronDown size={12} strokeWidth={1.8} /> : <ChevronRight size={12} strokeWidth={1.8} />}
+        历史追问（{messages.length} 条 · 只读存档）
+      </button>
+      {expanded && (
+        <div style={{ paddingTop: space.s2, paddingBottom: space.s2, display: 'flex', flexDirection: 'column', gap: space.s2 }}>
+          {messages.map((m) => (
+            <LegacyHistoryItem key={m.id} message={m} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 旧追问消息的只读渲染单元：不挂工具栏（编辑/分支），避免对无法修改的历史数据触发写操作。
+function LegacyHistoryItem({ message }: { message: Message }) {
+  const isUser = message.role === 'user';
+  return (
+    <div
+      style={{
+        padding: `${space.s2}px ${space.s3}px`,
+        borderRadius: radius.sm,
+        background: isUser ? color.accent50 : color.raised,
+        fontSize: text.sm,
+        lineHeight: 1.55,
+        color: color.ink800,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      <div style={{ fontSize: text.xs, color: color.ink500, marginBottom: 2 }}>
+        {isUser ? '你（追问）' : 'AI（追问回答）'}
+      </div>
+      {message.content}
     </div>
   );
 }
@@ -250,7 +380,6 @@ function DialogueNodeBody({ node, messages, onActivate, mode }: { node: NodeType
 }
 
 interface NodeFooterProps {
-  isRefined: boolean;
   isStreaming: boolean;
   draft: string;
   setDraft: (v: string) => void;
@@ -260,24 +389,20 @@ interface NodeFooterProps {
   mode: ChatMode;
 }
 
-function NodeFooter({ isRefined, isStreaming, draft, setDraft, handleKeyDown, onActivate, inputRef, mode }: NodeFooterProps) {
+function NodeFooter({ isStreaming, draft, setDraft, handleKeyDown, onActivate, inputRef, mode }: NodeFooterProps) {
   const [focused, setFocused] = useState(false);
-  const borderColor = isRefined ? color.accent200 : color.ink200;
-  const bg = isRefined ? color.warm : color.paper;
-  const innerBg = isRefined ? '#FBF3DF' : color.raised;
-  const textColor = isRefined ? color.accent700 : color.ink900;
   const placeholder = isStreaming ? 'AI 正在回复…' : '继续这个对话…';
   const padding = mode === 'fullscreen' ? `${space.s4}px ${space.s7}px ${space.s5}px` : `${space.s3}px ${space.s4}px ${space.s4}px`;
   const rows = mode === 'fullscreen' ? 3 : 2;
 
   return (
-    <div style={{ borderTop: `0.5px solid ${borderColor}`, padding, background: bg }}>
+    <div style={{ borderTop: `0.5px solid ${color.ink200}`, padding, background: color.paper }}>
       <div
         style={{
           display: 'flex',
           alignItems: 'flex-end',
           gap: space.s2,
-          background: innerBg,
+          background: color.raised,
           padding: `${space.s2}px ${space.s3}px`,
           borderRadius: radius.md,
           border: `1px solid ${focused ? color.accent400 : color.ink200}`,
@@ -285,14 +410,6 @@ function NodeFooter({ isRefined, isStreaming, draft, setDraft, handleKeyDown, on
           transition: `border-color ${motion.durFast}ms ${motion.easeInOut}, box-shadow ${motion.durFast}ms ${motion.easeInOut}`,
         }}
       >
-        {isRefined && (
-          <span
-            title="此节点继续对话只用提炼内容作为上下文，不带入原节点完整对话"
-            style={{ display: 'inline-flex', color: color.accent500, cursor: 'help', paddingTop: 4 }}
-          >
-            <Info size={14} strokeWidth={1.8} />
-          </span>
-        )}
         <textarea
           ref={inputRef}
           value={draft}
@@ -313,7 +430,7 @@ function NodeFooter({ isRefined, isStreaming, draft, setDraft, handleKeyDown, on
             lineHeight: 1.6,
             fontFamily: 'inherit',
             background: 'transparent',
-            color: textColor,
+            color: color.ink900,
           }}
         />
       </div>
