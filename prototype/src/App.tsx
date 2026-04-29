@@ -10,6 +10,7 @@ import { HelpDialog } from './canvas/HelpDialog';
 import { NodeFullscreenModal } from './canvas/NodeFullscreenModal';
 import { Minimap } from './canvas/Minimap';
 import { ToastContainer } from './canvas/ToastContainer';
+import { computeFitToNodesViewport } from './canvas/viewport-fit';
 import { color, text, space, radius, shadow, font, motion } from './styles/theme';
 
 const toolbarIconBtn: CSSProperties = {
@@ -74,6 +75,8 @@ export default function App() {
   const removeEdge = useCanvasStore((s) => s.removeEdge);
   const removeNodeAndEdges = useCanvasStore((s) => s.removeNodeAndEdges);
   const setViewport = useCanvasStore((s) => s.setViewport);
+  const setSystemViewport = useCanvasStore((s) => s.setSystemViewport);
+  const userHasMovedViewport = useCanvasStore((s) => s.userHasMovedViewport);
 
   const [refinePos, setRefinePos] = useState<{ x: number; y: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -84,6 +87,18 @@ export default function App() {
     if (hydrated) return;
     api.getCanvas().then(hydrate).catch((e) => console.error('hydrate failed', e));
   }, [hydrated, hydrate]);
+
+  // hydrate 完成后若用户从未操作过视口（首次启动 / 清缓存），自动 fit-to-nodes 居中。
+  // 修复"后端 viewport 永远是 0/0/1，节点漂移到 Y=1500+ 后启动看不见"的根因。
+  // 仅触发一次：依赖 hydrated；fit 完成后若用户拖动会通过 setViewport 把 userHasMovedViewport 置 true，
+  // 重启再走此分支时直接 short-circuit，尊重 localStorage 视口。
+  useEffect(() => {
+    if (!hydrated || userHasMovedViewport) return;
+    const allNodes = Object.values(useCanvasStore.getState().nodes);
+    if (allNodes.length === 0) return;
+    const fit = computeFitToNodesViewport(allNodes, window.innerWidth, window.innerHeight);
+    setSystemViewport(fit.viewportX, fit.viewportY, fit.viewportZoom);
+  }, [hydrated, userHasMovedViewport, setSystemViewport]);
 
   // 启动后检测是否已配置 LLM；未配置则强制弹出 SettingsDialog
   useEffect(() => {
@@ -274,8 +289,13 @@ export default function App() {
       setZoom(next);
       setViewport(vx, vy, next);
     } else {
-      setVx(vx - e.deltaX);
-      setVy(vy - e.deltaY);
+      const nextVx = vx - e.deltaX;
+      const nextVy = vy - e.deltaY;
+      setVx(nextVx);
+      setVy(nextVy);
+      // 滚轮平移也算用户主动操作视口：必须写回 store + 标记 userHasMovedViewport，
+      // 否则用户用滚轮把画布滚到节点群后重启会被 fit-to-nodes 重新居中覆盖。
+      setViewport(nextVx, nextVy, zoom);
     }
   };
 

@@ -345,6 +345,9 @@ const BRANCH_Y_OFFSET = 80;
 export async function branchNode(params: {
   parentNodeId: string;
   fromMessageId: string;
+  // 可选位置覆盖：前端在视口外父节点上发起分支时传入"视口可见区内的空位"，
+  // 避免子节点继续累加到屏外造成"看不见"。未提供则回退到 parent.X+440 / Y+sibling*80 的偏移算法。
+  positionOverride?: { x: number; y: number } | null;
 }): Promise<{ node: Node; edge: Edge }> {
   const parent = await canvas.getNode(params.parentNodeId);
   if (!parent) throw new Error(`parent node not found: ${params.parentNodeId}`);
@@ -356,13 +359,22 @@ export async function branchNode(params: {
     throw new Error(`fromMessageId not found in parent: ${params.fromMessageId}`);
   }
 
-  // 已有兄弟分支数决定 Y 错开量（第 N+1 个子节点落在父节点下方 N * BRANCH_Y_OFFSET 处）
-  const siblingBranchCount = (await canvas.getEdgesOfParent(params.parentNodeId)).filter(
-    (e) => e.edgeKind === 'branch',
-  ).length;
+  let positionX: number;
+  let positionY: number;
+  if (params.positionOverride) {
+    positionX = params.positionOverride.x;
+    positionY = params.positionOverride.y;
+  } else {
+    // 已有兄弟分支数决定 Y 错开量（第 N+1 个子节点落在父节点下方 N * BRANCH_Y_OFFSET 处）
+    const siblingBranchCount = (await canvas.getEdgesOfParent(params.parentNodeId)).filter(
+      (e) => e.edgeKind === 'branch',
+    ).length;
+    positionX = parent.positionX + 440;
+    positionY = parent.positionY + siblingBranchCount * BRANCH_Y_OFFSET;
+  }
   const childNode = await canvas.createNode({
-    positionX: parent.positionX + 440,
-    positionY: parent.positionY + siblingBranchCount * BRANCH_Y_OFFSET,
+    positionX,
+    positionY,
     type: 'dialogue',
   });
 

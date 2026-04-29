@@ -6,7 +6,7 @@
 import { useCanvasStore } from '../store/canvasStore';
 import { api } from '../api/client';
 import { toast } from '../store/toastStore';
-import type { Message, StreamEvent } from '../types';
+import type { Message, Node, StreamEvent } from '../types';
 
 const newMsgId = () => `m_${Math.random().toString(36).slice(2, 11)}`;
 
@@ -356,8 +356,10 @@ function extractTitleErrorCode(msg: string): string {
  * 不在此处吞错——否则 UI 永远看不到失败原因。
  */
 export async function performBranch(parentNodeId: string, fromMessageId: string): Promise<void> {
-  const { node, edge } = await api.branchNode({ parentNodeId, fromMessageId });
   const store = useCanvasStore.getState();
+  const parent = store.nodes[parentNodeId];
+  const positionOverride = parent ? computeBranchPlacement(parent, store) : null;
+  const { node, edge } = await api.branchNode({ parentNodeId, fromMessageId, positionOverride });
   store.upsertNode(node);
   store.upsertEdge(edge);
   store.openFullscreen(node.id);
@@ -365,6 +367,51 @@ export async function performBranch(parentNodeId: string, fromMessageId: string)
   const nodeCenterX = node.positionX + 180;
   const nodeCenterY = node.positionY + 120;
   store.setViewport(window.innerWidth / 2 - nodeCenterX * zoom, window.innerHeight / 2 - nodeCenterY * zoom, zoom);
+}
+
+/**
+ * 计算新分支节点的逻辑坐标，避免漂移到屏外。
+ *
+ * 决策树：
+ * - 父节点在视口可见范围内 → 沿用 parent.X+440 / Y+sibling*80（保持视觉层级关系）
+ * - 父节点在视口外 → 落到当前视口中心稍偏右下，让用户立即看到新分支
+ *
+ * 返回 null 表示让后端走默认偏移；实际上分支永远落到 store.nodes 里有 fallback 兜底。
+ */
+function computeBranchPlacement(
+  parent: Node,
+  store: ReturnType<typeof useCanvasStore.getState>,
+): { x: number; y: number } {
+  const vx = store.canvas?.viewportX ?? 0;
+  const vy = store.canvas?.viewportY ?? 0;
+  const zoom = store.canvas?.viewportZoom ?? 1;
+  // 视口可见范围（逻辑坐标系）：屏幕 (0,0)→(W,H) 对应逻辑 (-vx/zoom, -vy/zoom)→(...+W/zoom, ...+H/zoom)
+  const viewLeft = -vx / zoom;
+  const viewTop = -vy / zoom;
+  const viewRight = viewLeft + window.innerWidth / zoom;
+  const viewBottom = viewTop + window.innerHeight / zoom;
+  // 以父节点几何中心（positionX+180, positionY+120）作为"可见"判定锚点。
+  // 用中心而非节点四角：只要节点中心在视口里，用户就能看到节点主体，
+  // 此时沿用相对偏移（+440/+sibling*80）的视觉关系仍然成立；
+  // 若中心已出视口，说明节点整体大概率不可见，改为落到视口中央更合理。
+  const parentCenterX = parent.positionX + 180;
+  const parentCenterY = parent.positionY + 120;
+  const parentVisible =
+    parentCenterX >= viewLeft && parentCenterX <= viewRight && parentCenterY >= viewTop && parentCenterY <= viewBottom;
+
+  const siblingCount = Object.values(store.edges).filter(
+    (e) => e.parentNodeId === parent.id && e.edgeKind === 'branch',
+  ).length;
+
+  if (parentVisible) {
+    // 与后端 fallback 完全一致：父右侧 +440，纵向按兄弟数错开 80
+    return { x: parent.positionX + 440, y: parent.positionY + siblingCount * 80 };
+  }
+  // 父节点不可见：落到视口中心偏右下，避开视口正中央可能存在的其它节点
+  const centerX = (viewLeft + viewRight) / 2;
+  const centerY = (viewTop + viewBottom) / 2;
+  // 节点尺寸 360x240：以中心为锚减去一半得到左上角，再追加偏移让兄弟错开
+  return { x: centerX - 180 + siblingCount * 40, y: centerY - 120 + siblingCount * 40 };
 }
 
 /**
@@ -447,7 +494,13 @@ export async function performAskOnRefined(refinedNodeId: string): Promise<void> 
     return;
   }
   try {
-    const { node, edge } = await api.branchNode({ parentNodeId: refinedNodeId, fromMessageId: lastAssistant.id });
+    const refinedNode = store.nodes[refinedNodeId];
+    const positionOverride = refinedNode ? computeBranchPlacement(refinedNode, store) : null;
+    const { node, edge } = await api.branchNode({
+      parentNodeId: refinedNodeId,
+      fromMessageId: lastAssistant.id,
+      positionOverride,
+    });
     store.upsertNode(node);
     store.upsertEdge(edge);
     store.openFullscreen(node.id);

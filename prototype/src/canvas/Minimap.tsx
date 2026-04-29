@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { Crosshair } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
+import { computeFitToNodesViewport } from './viewport-fit';
 import { color, radius, shadow } from '../styles/theme';
 
 // 画布右下角的全局预览小视窗：
@@ -134,6 +136,7 @@ export function Minimap() {
         userSelect: 'none',
       }}
     >
+      <FitToNodesButton />
       <svg width={MINIMAP_W} height={MINIMAP_H} style={{ display: 'block' }}>
         {nodeEstimates.map(({ node: n, w, h }) => {
           const rx = (n.positionX - minX) * scale + offsetX;
@@ -172,5 +175,52 @@ export function Minimap() {
         />
       </svg>
     </div>
+  );
+}
+
+/**
+ * minimap 右上角的"回到节点群"按钮：当用户视口漂离节点群（节点全部不在屏幕内）时，
+ * 一键调用 fit-to-nodes 居中。是 fit-to-nodes 的兜底入口，与启动钩子共用同一计算函数。
+ *
+ * 此处显式调 setViewport（用户主动）而非 setSystemViewport：用户点击的语义就是"我想看节点"，
+ * 应该把 userHasMovedViewport 置 true，避免下次启动又自动居中覆盖此次结果。
+ */
+function FitToNodesButton() {
+  const setViewport = useCanvasStore((s) => s.setViewport);
+  const [hover, setHover] = useState(false);
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const allNodes = Object.values(useCanvasStore.getState().nodes);
+    if (allNodes.length === 0) return;
+    const fit = computeFitToNodesViewport(allNodes, window.innerWidth, window.innerHeight);
+    setViewport(fit.viewportX, fit.viewportY, fit.viewportZoom);
+  };
+  return (
+    <button
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={handleClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="回到节点群（自动居中所有节点）"
+      style={{
+        position: 'absolute',
+        top: 6,
+        right: 6,
+        width: 24,
+        height: 24,
+        padding: 0,
+        background: hover ? color.accent50 : 'rgba(255,255,255,0.7)',
+        border: `0.5px solid ${color.ink200}`,
+        borderRadius: radius.sm,
+        cursor: 'pointer',
+        color: hover ? color.accent600 : color.ink600,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1,
+      }}
+    >
+      <Crosshair size={13} strokeWidth={1.8} />
+    </button>
   );
 }

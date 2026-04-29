@@ -18,6 +18,10 @@ interface CanvasState {
   // M5 / 决策 29：agent 启动率/中断率指标内存计数；DevTools 可见，不持久化、不上报
   agentStats: AgentStats;
   hydrated: boolean;
+  // 用户是否在本端手动操作过视口（拖动/缩放/minimap 跳转）。
+  // 启动时若为 false，App 会执行 fit-to-nodes 自动居中；为 true 则尊重 localStorage 已保存的视口。
+  // 持久化在 localStorage 中，使"已用过的客户端"重启后保留上次视口；首次启动 / 清缓存 → 走自动居中。
+  userHasMovedViewport: boolean;
 }
 
 interface AgentStats {
@@ -58,7 +62,13 @@ interface CanvasActions {
   openFullscreen: (nodeId: string) => void;
   // 关闭大屏 Modal；调用方可附带把节点折叠（按 R013 的 fullscreen→collapsed 状态机）。
   closeFullscreen: () => void;
+  // setViewport：用户主动操作视口（拖动/缩放/minimap）调用此函数 → 同时把 userHasMovedViewport 置为 true，
+  // 让下次启动尊重当前视口。系统计算的初始视口（fit-to-nodes 启动钩子）不应走此函数，应直接 set canvas，
+  // 否则会污染"用户是否动过"的语义。
   setViewport: (x: number, y: number, zoom: number) => void;
+  // 系统计算的初始视口（fit-to-nodes）：直接覆盖 canvas viewport，不改 userHasMovedViewport。
+  // 与 setViewport 分离：用户手动 vs 系统设定的语义必须可区分，否则启动自动居中本身会被误判为"用户动过"。
+  setSystemViewport: (x: number, y: number, zoom: number) => void;
   bumpAgentStat: (kind: 'started' | 'completed' | 'aborted', reason?: string) => void;
 }
 
@@ -78,12 +88,27 @@ export const useCanvasStore = create<Store>()(
       streamingByNode: {},
       agentStats: { started: 0, completed: 0, aborted: 0, byReason: {} },
       hydrated: false,
+      userHasMovedViewport: false,
 
+      // 启动时合并后端快照：节点/边/消息以后端为准；canvas viewport 在 userHasMovedViewport=true 时
+      // 保留 store 现有值（来自 localStorage），否则用后端值——首次启动后再交给 App 的 fit-to-nodes 钩子覆盖。
+      // 这样修复了"后端固定 0/0/1 永远覆盖前端拖到的位置"的双存储竞争。
       hydrate: (data) => {
         const nodes = Object.fromEntries(data.nodes.map((n) => [n.id, n]));
         const edges = Object.fromEntries(data.edges.map((e) => [e.id, e]));
         const messages = Object.fromEntries(data.messages.map((m) => [m.id, m]));
-        set({ canvas: data.canvas, nodes, edges, messages, hydrated: true });
+        set((s) => {
+          const localCanvas = s.canvas;
+          const mergedCanvas = s.userHasMovedViewport && localCanvas
+            ? {
+                ...data.canvas,
+                viewportX: localCanvas.viewportX,
+                viewportY: localCanvas.viewportY,
+                viewportZoom: localCanvas.viewportZoom,
+              }
+            : data.canvas;
+          return { canvas: mergedCanvas, nodes, edges, messages, hydrated: true };
+        });
       },
 
       upsertNode: (node) =>
@@ -303,6 +328,14 @@ export const useCanvasStore = create<Store>()(
       setViewport: (x, y, zoom) =>
         set((s) => ({
           canvas: s.canvas ? { ...s.canvas, viewportX: x, viewportY: y, viewportZoom: zoom } : s.canvas,
+          // 用户主动操作 → 标记本端视口已被用过，下次启动跳过 fit-to-nodes
+          userHasMovedViewport: true,
+        })),
+
+      setSystemViewport: (x, y, zoom) =>
+        set((s) => ({
+          canvas: s.canvas ? { ...s.canvas, viewportX: x, viewportY: y, viewportZoom: zoom } : s.canvas,
+          // 不改 userHasMovedViewport：fit-to-nodes 居中是系统行为，不应阻断后续拖动写入
         })),
 
       bumpAgentStat: (kind, reason) =>
@@ -318,12 +351,31 @@ export const useCanvasStore = create<Store>()(
     }),
     {
       name: 'power-chat-canvas',
-      // 只持久化数据层，不持久化运行时状态（active/selected/streaming/hydrated）
+      // version 1：在 0→1 升级时，对没有 userHasMovedViewport 字段的旧 localStorage 数据做迁移——
+      // 若 canvas viewport 不是初始 0/0/1，说明该用户曾拖动过视口（旧版本无标志位但实际动过），
+      // 推断为已操作；否则保持 false。避免老用户升级后首次启动被 fit-to-nodes 误覆盖到旧视口。
+      version: 1,
+      migrate: (persisted: any, version: number) => {
+        if (version === 0 && persisted && persisted.userHasMovedViewport === undefined) {
+          const c = persisted.canvas;
+          // 旧版本没有 userHasMovedViewport 字段。推断逻辑：
+          // 后端 canvas 初始化时 viewport 固定为 (0, 0, 1)；若 localStorage 里的值偏离了初始值，
+          // 说明该用户曾经拖动/缩放过（旧版本把视口写到 canvas 里），应视为"已动过"。
+          // 用 `!== 0/0/1` 作为启发式推断，宁可误判为"动过"（保留旧视口）也不覆盖老用户的视口位置。
+          const movedByDefault = c
+            ? c.viewportX !== 0 || c.viewportY !== 0 || c.viewportZoom !== 1
+            : false;
+          return { ...persisted, userHasMovedViewport: movedByDefault };
+        }
+        return persisted;
+      },
+      // 只持久化数据层 + 视口"用过"标志位；不持久化运行时状态（active/selected/streaming/hydrated）
       partialize: (s) => ({
         canvas: s.canvas,
         nodes: s.nodes,
         edges: s.edges,
         messages: s.messages,
+        userHasMovedViewport: s.userHasMovedViewport,
       }),
     },
   ),

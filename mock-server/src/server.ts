@@ -108,12 +108,12 @@ app.delete('/api/nodes/:id/messages', async (req, res) => {
 
 // === conversation ===
 app.post('/api/nodes/branch', async (req, res) => {
-  const { parentNodeId, fromMessageId } = req.body;
+  const { parentNodeId, fromMessageId, positionOverride } = req.body;
   if (!parentNodeId || !fromMessageId) {
     res.status(400).json({ error: 'bad_request', message: 'parentNodeId, fromMessageId required' });
     return;
   }
-  await respondCreated(res, () => conversation.branchNode({ parentNodeId, fromMessageId }));
+  await respondCreated(res, () => conversation.branchNode({ parentNodeId, fromMessageId, positionOverride }));
 });
 
 app.post('/api/nodes/:id/messages', async (req, res) => {

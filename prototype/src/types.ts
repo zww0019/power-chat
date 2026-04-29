@@ -43,6 +43,9 @@ export interface CreateNodeRequest {
 export interface BranchRequest {
   parentNodeId: string;
   fromMessageId: string; // 从哪条 AI 消息分支
+  // 可选位置覆盖：前端在父节点不可见时传入"视口可见区内的空位"，避免子节点漂移到屏外。
+  // 不传则后端走 parent.X+440 / Y+sibling*80 的 fallback 偏移。
+  positionOverride?: { x: number; y: number } | null;
 }
 
 export interface RefineRequest {

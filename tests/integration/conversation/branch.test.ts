@@ -97,4 +97,22 @@ describe('conversation: 分支动作', () => {
   it.skip('父节点删除后再次访问子节点的请求中无父链消息（解构验证）', async () => {
     // 同上
   });
+
+  it('positionOverride 提供时使用之，不走 parent.X+440/Y+sibling*80 偏移', async () => {
+    const { parent, assistantMsgId } = await setupParentWithMessage();
+    const result = await api<any>('/api/nodes/branch', {
+      method: 'POST',
+      body: JSON.stringify({
+        parentNodeId: parent.id,
+        fromMessageId: assistantMsgId,
+        positionOverride: { x: 9999, y: 8888 },
+      }),
+      expectStatus: 201,
+    });
+    expect(result.node.positionX).toBe(9999);
+    expect(result.node.positionY).toBe(8888);
+    // edge 仍正常建立，inheritedUntilSequence 不受 positionOverride 影响
+    expect(result.edge.edgeKind).toBe('branch');
+    expect(result.edge.inheritedUntilSequence).toBe(1);
+  });
 });
