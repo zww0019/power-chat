@@ -8,6 +8,7 @@ collapsed ←(关闭大屏：ESC / 点遮罩 / 点 ×)─ fullscreen
 触发条件：
 - expanded → collapsed：用户点击节点 header 右侧的 `−` 按钮
 - collapsed → expanded：用户在 collapsed 卡片上单击（位移阈值 < 4px 视为单击，超过视为拖拽）
+- 批量切换入口（右上角 toolbar）：「全部折叠」对所有非 collapsed 节点置 collapsed=true；「全部展开」对所有 collapsed 节点置 collapsed=false；已是目标态的节点跳过保证幂等；不影响 fullscreen 单例
 - expanded → fullscreen：用户点击节点 header 的 `⛶` 按钮；进入 fullscreen 时节点本身在画布上同步置 collapsed=true（避免画布与 Modal 同时展示同一节点的展开态）
 - fullscreen → collapsed：ESC / 点 Modal 外遮罩 / 点 Modal header 的 `×`；fullscreenNodeId 清空，节点保持折叠态
 - fullscreen 全局唯一：同时只能有一个节点处于 fullscreen（由 store.openFullscreen 保证，新打开自动替换旧的）；不持久化，刷新即关闭

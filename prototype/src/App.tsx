@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
-import { Sparkles, HelpCircle, Settings as SettingsIcon, MousePointerClick } from 'lucide-react';
+import { Sparkles, HelpCircle, Settings as SettingsIcon, MousePointerClick, Minimize2, Maximize2 } from 'lucide-react';
 import { useCanvasStore } from './store/canvasStore';
 import { api } from './api/client';
 import { CanvasNode } from './canvas/Node';
@@ -415,6 +415,22 @@ export default function App() {
   const allNodes = Object.values(nodes);
   const allEdges = Object.values(edges);
 
+  const handleCollapseAll = useCallback(() => {
+    for (const node of allNodes) {
+      if (node.collapsed === true) continue;
+      updateNode(node.id, { collapsed: true });
+      api.updateNode(node.id, { collapsed: true }).catch(() => {});
+    }
+  }, [allNodes, updateNode]);
+
+  const handleExpandAll = useCallback(() => {
+    for (const node of allNodes) {
+      if (node.collapsed !== true) continue;
+      updateNode(node.id, { collapsed: false });
+      api.updateNode(node.id, { collapsed: false }).catch(() => {});
+    }
+  }, [allNodes, updateNode]);
+
   if (!hydrated) {
     return (
       <div
@@ -566,6 +582,12 @@ export default function App() {
           <span style={{ fontSize: text.xs, color: color.ink500, fontVariantNumeric: 'tabular-nums', marginRight: 6 }}>
             {Math.round(zoom * 100)}%
           </span>
+          <ToolbarIconButton onClick={handleCollapseAll} title="全部折叠">
+            <Minimize2 size={17} strokeWidth={1.6} />
+          </ToolbarIconButton>
+          <ToolbarIconButton onClick={handleExpandAll} title="全部展开">
+            <Maximize2 size={17} strokeWidth={1.6} />
+          </ToolbarIconButton>
           <ToolbarIconButton onClick={() => setHelpOpen(true)} title="帮助">
             <HelpCircle size={17} strokeWidth={1.6} />
           </ToolbarIconButton>
