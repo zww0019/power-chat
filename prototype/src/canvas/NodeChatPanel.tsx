@@ -227,10 +227,19 @@ function RefinedNodeFooter({ nodeId, isStreaming, mode }: { nodeId: string; isSt
 }
 
 function bodyContainerStyle(mode: ChatMode, padding: string): React.CSSProperties {
+  // userSelect: 'text' 是必需的：App 根 div 全局设了 user-select: none 以避免画布
+  // 拖拽期间误选 UI 文本（节点 header / 折叠卡 / 边等），但展开态消息体里的 AI 回复
+  // 与用户提问需要让用户随手框选复制，所以在此局部覆盖回 text。cursor: text 同步给出
+  // I-beam 视觉提示。WebKit 内核需带前缀（Electron / Tauri WebView 走的是 WebKit）。
+  const selectable: React.CSSProperties = {
+    userSelect: 'text',
+    WebkitUserSelect: 'text',
+    cursor: 'text',
+  };
   if (mode === 'fullscreen') {
-    return { padding, flex: 1, minHeight: 0, overflowY: 'auto' };
+    return { padding, flex: 1, minHeight: 0, overflowY: 'auto', ...selectable };
   }
-  return { padding, maxHeight: 480, overflowY: 'auto' };
+  return { padding, maxHeight: 480, overflowY: 'auto', ...selectable };
 }
 
 function RefinedNodeBody({ nodeId, messages, onActivate, mode }: { nodeId: string; messages: Message[]; onActivate: () => void; mode: ChatMode }) {
