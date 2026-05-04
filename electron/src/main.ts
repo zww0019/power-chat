@@ -25,6 +25,10 @@ function createWindow(): void {
     },
   });
 
+  // 禁用 Chromium 默认的 pinch-to-page-zoom，让 macOS 双指捏合手势
+  // 以带 ctrlKey 的 wheel 事件形式派发给渲染进程，由画布缩放逻辑接管。
+  mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+
   if (isDev) {
     mainWindow.loadURL(VITE_DEV_URL);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
