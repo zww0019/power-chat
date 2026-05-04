@@ -55,6 +55,10 @@ function ToolbarIconButton({
   );
 }
 
+// 画布缩放范围常量：wheel 缩放和 pinch 手势缩放共用，保持体验一致
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 2;
+
 export default function App() {
   const canvas = useCanvasStore((s) => s.canvas);
   const nodes = useCanvasStore((s) => s.nodes);
@@ -301,8 +305,6 @@ export default function App() {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ZOOM_MIN = 0.25;
-    const ZOOM_MAX = 2;
     const ZOOM_K = 0.0015;       // 指数映射系数：每像素滚动对应恒定百分比缩放
     const DELTA_CLAMP = 50;      // 设备归一化：触控板≈±3、鼠标≈±100~150，clamp 到统一量级
     // 150ms 比典型触控板惯性滚动（约 300–500ms）短得多，但比单次 RAF（16ms）长两个数量级，
@@ -388,6 +390,47 @@ export default function App() {
         flushPersist();
       }
     };
+  }, [setViewport]);
+
+  // macOS Electron 双指捏合手势缩放：主进程通过 before-input-event 拦截 gesturePinch*
+  // 并通过 IPC 发送 pinch-gesture 事件。渲染进程在此订阅并将 scale 转换为视口缩放，
+  // 围绕双指中心点 (pivot) 保持内容贴合。手势结束 (pinchEnd) 时调用 setViewport 持久化。
+  useEffect(() => {
+    const pw = (window as any).powerChat;
+    if (!pw?.isElectron || !pw?.onPinchGesture) return;
+
+    let pinchStartZoom = 1;
+    let pinchStartVx = 0;
+    let pinchStartVy = 0;
+
+    const unsub = pw.onPinchGesture((data: any) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const pivotX = data.x - rect.left;
+      const pivotY = data.y - rect.top;
+
+      if (data.type === 'pinchBegin') {
+        pinchStartZoom = zoomRef.current;
+        pinchStartVx = vxRef.current;
+        pinchStartVy = vyRef.current;
+      } else if (data.type === 'pinchUpdate') {
+        const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStartZoom * data.scale));
+        const ratio = newZoom / pinchStartZoom;
+        const newVx = pivotX - (pivotX - pinchStartVx) * ratio;
+        const newVy = pivotY - (pivotY - pinchStartVy) * ratio;
+        zoomRef.current = newZoom;
+        vxRef.current = newVx;
+        vyRef.current = newVy;
+        setZoom(newZoom);
+        setVx(newVx);
+        setVy(newVy);
+      } else if (data.type === 'pinchEnd') {
+        setViewport(vxRef.current, vyRef.current, zoomRef.current);
+      }
+    });
+
+    return unsub;
   }, [setViewport]);
 
   const handleRefineClick = () => {

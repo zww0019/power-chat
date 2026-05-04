@@ -25,9 +25,28 @@ function createWindow(): void {
     },
   });
 
-  // 禁用 Chromium 默认的 pinch-to-page-zoom，让 macOS 双指捏合手势
-  // 以带 ctrlKey 的 wheel 事件形式派发给渲染进程，由画布缩放逻辑接管。
-  mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+  // 拦截 macOS 双指捏合手势 (gesturePinch)，阻止 Electron 默认页面缩放，
+  // 并通过 IPC 将手势数据（scale + 光标坐标）转发给渲染进程，由画布缩放逻辑接管。
+  mainWindow.webContents.on('before-input-event' as any, (event: any, input: any) => {
+    if (
+      input.type === 'gesturePinchBegin' ||
+      input.type === 'gesturePinchUpdate' ||
+      input.type === 'gesturePinchEnd'
+    ) {
+      event.preventDefault();
+      const wc = mainWindow?.webContents;
+      if (!wc || wc.isDestroyed()) return;
+      wc.send('pinch-gesture', {
+        type:
+          input.type === 'gesturePinchBegin' ? 'pinchBegin' :
+          input.type === 'gesturePinchUpdate' ? 'pinchUpdate' :
+          'pinchEnd',
+        scale: (input as any).scale ?? 1,
+        x: (input as any).x ?? 0,
+        y: (input as any).y ?? 0,
+      });
+    }
+  });
 
   if (isDev) {
     mainWindow.loadURL(VITE_DEV_URL);

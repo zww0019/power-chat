@@ -20,4 +20,11 @@ contextBridge.exposeInMainWorld('powerChat', {
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },
+
+  // 订阅 macOS 双指捏合手势事件（主进程 before-input-event → IPC 转发）
+  onPinchGesture(callback) {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on('pinch-gesture', listener);
+    return () => ipcRenderer.removeListener('pinch-gesture', listener);
+  },
 });
