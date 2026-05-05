@@ -2,7 +2,7 @@
 // 节点内消息发送 + 上下文组装（关键 INV 守卫所在）+ 分支动作 + 用户主动触发的标题生成。
 //
 // INV-1: 节点对话上下文 = 该节点所有 Message + 入边携带的继承内容
-// INV-2: refined 类型节点不展开 inbound edges 取原节点内容（只用自己的 messages）
+// INV-2: refined / written 类型节点不展开 inbound edges 取原节点内容（只用自己的 messages）
 // INV-3: 分支边的 inheritedUntilSequence immutable
 // INV-8: Message.sequence 严格单调
 // INV-11（修正后）: reasoningContent 按协议要求传递（DeepSeek-Reasoner 要求多轮回传）；
@@ -34,8 +34,8 @@ export async function assembleContext(nodeId: string): Promise<LLMMessage[]> {
   const node = await canvas.getNode(nodeId);
   if (!node) return [];
 
-  // INV-2: refined 节点不展开父链
-  if (node.type === 'refined') {
+  // INV-2: refined / written 节点不展开父链
+  if (node.type === 'refined' || node.type === 'written') {
     const own = await getMessagesOfNode(nodeId);
     return own.map(toLLMMessage); // agentTrace 已过滤（白名单保证）；reasoningContent 透传
   }
@@ -75,8 +75,8 @@ async function assembleContextWithLimit(
   const node = await canvas.getNode(nodeId);
   if (!node) return [];
 
-  if (node.type === 'refined') {
-    // 提炼节点没有 sequence 截止概念（它本身是减熵起点）
+  if (node.type === 'refined' || node.type === 'written') {
+    // 提炼/撰写节点没有 sequence 截止概念（它本身是减熵起点）
     const own = await getMessagesOfNode(nodeId);
     return own.map(toLLMMessage);
   }
@@ -127,10 +127,10 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
     yield { type: 'error', error: `node_not_found: ${params.nodeId}` };
     return;
   }
-  // 提炼节点不再支持直接追问：UI 上已用"继续追问"按钮替换输入框（孵化对话子节点继承提炼输出）。
-  // 后端守卫为防御层——前端绕过/旧客户端误调时统一拒绝，避免破坏"提炼即终态"的语义。
-  if (node.type === 'refined') {
-    yield { type: 'error', error: 'cannot_send_to_refined_node' };
+  // 提炼/撰写节点不再支持直接追问：UI 上已用"继续追问"按钮替换输入框（孵化对话子节点继承输出）。
+  // 后端守卫为防御层——前端绕过/旧客户端误调时统一拒绝，避免破坏"提炼/撰写即终态"的语义。
+  if (node.type === 'refined' || node.type === 'written') {
+    yield { type: 'error', error: 'cannot_send_to_refined_or_written_node' };
     return;
   }
 

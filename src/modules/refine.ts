@@ -10,7 +10,7 @@ import { getPersistence } from './persistence.js';
 import * as canvas from './canvas.js';
 import { streamChat } from './llm-client.js';
 import { getSettings } from './settings.js';
-import { newId, nowIso, runAssistantStream } from './_utils.js';
+import { newId, nowIso, runAssistantStream, computeGeometricCenter } from './_utils.js';
 
 interface PendingRefine {
   refinedNodeId: string;
@@ -19,23 +19,6 @@ interface PendingRefine {
 }
 
 const pendingTasks = new Map<string, PendingRefine>();
-
-// 计算几何中心（多父位置的平均，简单 + 偏移避让）
-async function computeGeometricCenter(sourceNodeIds: string[]): Promise<{ x: number; y: number }> {
-  let sumX = 0;
-  let sumY = 0;
-  let count = 0;
-  for (const id of sourceNodeIds) {
-    const n = await canvas.getNode(id);
-    if (!n) continue;
-    sumX += n.positionX + 190; // 节点中心 x
-    sumY += n.positionY + 100;
-    count++;
-  }
-  if (count === 0) return { x: 0, y: 0 };
-  // 偏移避让：往下 200px，让用户能看到原节点
-  return { x: sumX / count - 190, y: sumY / count + 200 };
-}
 
 export async function createRefine(params: {
   sourceNodeIds: string[];

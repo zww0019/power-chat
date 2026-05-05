@@ -2,10 +2,10 @@
 // 此文件被 mock-server / 未来的 Electron 主进程 / tests 共同引用。
 // 注意：与 prototype/src/types.ts 保持完全一致（Stage 7 抽象成同一份）。
 
-export type NodeType = 'dialogue' | 'refined';
+export type NodeType = 'dialogue' | 'refined' | 'written';
 export type MessageRole = 'user' | 'assistant';
 export type MessageStatus = 'complete' | 'streaming' | 'partial' | 'error';
-export type EdgeKind = 'branch' | 'refine_input';
+export type EdgeKind = 'branch' | 'refine_input' | 'write_input';
 
 export interface Canvas {
   id: string;

@@ -27,7 +27,7 @@
 |---|---|---|---|
 | id | UUID | PK | |
 | canvas_id | UUID | FK → Canvas, required | |
-| type | enum: `dialogue` \| `refined` | required | 对话节点 vs 提炼节点（PRD §5.2）|
+| type | enum: `dialogue` \| `refined` \| `written` | required | 对话节点 vs 提炼节点 vs 撰写节点（PRD §5.2）|
 | position_x | float | required | 画布逻辑坐标 |
 | position_y | float | required | |
 | width | float | default 380 | PRD §5.1 固定宽度，但保留字段以便未来调整 |
@@ -55,7 +55,7 @@
 **禁止自环：** `parent_node_id != child_node_id`。
 **有向：** parent → child 表示子节点继承了 parent 的对话上下文（PRD §3.2）。
 
-> **多父支持**：一个 child_node 可有多条 inbound edge（仅由"提炼多个节点"产生，PRD §3.2）。
+> **多父支持**：一个 child_node 可有多条 inbound edge（仅由"提炼/撰写多个节点"产生，PRD §3.2）。
 > **多子支持**：一个 parent_node 可有多条 outbound edge（每次"分支"产生一个）。
 
 ### 1.4 Message（消息）
@@ -238,8 +238,8 @@ flowchart LR
 节点对话上下文 = 该节点所有 Message + 该节点 inbound edges 携带的继承内容。**不会**通过其他渠道泄漏。
 - 来源：旅程 1 步骤 11-12（父节点新增不流入子节点）
 
-### INV-2：提炼节点的减熵（PRD §7.4）
-对于 `type = refined` 的 Node，AI 调用上下文 = 该节点 Messages 序列。**不**展开 inbound edges 取原节点完整 Messages。
+### INV-2：提炼/撰写节点的减熵（PRD §7.4）
+对于 `type = refined` 或 `type = written` 的 Node，AI 调用上下文 = 该节点 Messages 序列。**不**展开 inbound edges 取原节点完整 Messages。
 - 来源：旅程 1 步骤 22
 
 ### INV-3：分支继承的快照性

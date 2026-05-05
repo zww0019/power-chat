@@ -7,12 +7,16 @@ import cors from 'cors';
 import {
   ContextOverflowError,
   MessageReferencedByBranchError,
+  NoMessagesForTitleError,
+  NodeNotFoundError,
   NotConfiguredError,
   StreamingNodeError,
+  TitleGenerationFailedError,
 } from '../../src/types.js';
 import * as canvas from '../../src/modules/canvas.js';
 import * as conversation from '../../src/modules/conversation.js';
 import * as refine from '../../src/modules/refine.js';
+import * as writer from '../../src/modules/writer.js';
 import * as settings from '../../src/modules/settings.js';
 import * as abortRegistry from '../../src/modules/abort-registry.js';
 import { getPersistence } from '../../src/modules/persistence.js';
@@ -106,6 +110,37 @@ app.delete('/api/nodes/:id/messages', async (req, res) => {
   }
 });
 
+// 用户主动触发节点标题重新生成（点击标题旁的刷新图标）。
+// 错误映射：
+// - NodeNotFoundError → 404 not_found
+// - NoMessagesForTitleError → 400 empty_node
+// - TitleGenerationFailedError / NotConfiguredError → 502 llm_failed
+// 与 ipc.ts 同款映射保持两端一致（E020）
+app.post('/api/nodes/:id/regenerate-title', async (req, res) => {
+  try {
+    const result = await conversation.regenerateNodeTitle(req.params.id);
+    res.json(result);
+  } catch (e: any) {
+    if (e instanceof NodeNotFoundError) {
+      res.status(404).json({ error: 'not_found', message: e.message });
+      return;
+    }
+    if (e instanceof NoMessagesForTitleError) {
+      res.status(400).json({ error: 'empty_node', message: e.message });
+      return;
+    }
+    if (e instanceof NotConfiguredError) {
+      res.status(502).json({ error: 'not_configured', message: 'LLM 未配置' });
+      return;
+    }
+    if (e instanceof TitleGenerationFailedError) {
+      res.status(502).json({ error: 'llm_failed', message: e.message });
+      return;
+    }
+    res.status(502).json({ error: 'llm_failed', message: e.message ?? String(e) });
+  }
+});
+
 // === conversation ===
 app.post('/api/nodes/branch', async (req, res) => {
   const { parentNodeId, fromMessageId, positionOverride } = req.body;
@@ -191,6 +226,29 @@ app.get('/api/refine/stream/:token', async (req, res) => {
     writeSSE(res, evt);
     if (evt.type === 'error' && evt.error === 'token_not_found') {
       // token 失效不应在 SSE 里发，应是 404
+      res.end();
+      return;
+    }
+  }
+  res.end();
+});
+
+// === writer ===
+app.post('/api/write', async (req, res) => {
+  const { sourceNodeIds, writingRequest } = req.body;
+  if (!Array.isArray(sourceNodeIds) || sourceNodeIds.length === 0) {
+    res.status(400).json({ error: 'bad_request', message: 'sourceNodeIds required' });
+    return;
+  }
+  await respondCreated(res, () => writer.createWrite({ sourceNodeIds, writingRequest }));
+});
+
+app.get('/api/write/stream/:token', async (req, res) => {
+  setupSSE(res);
+
+  for await (const evt of writer.streamWrite(req.params.token)) {
+    writeSSE(res, evt);
+    if (evt.type === 'error' && evt.error === 'token_not_found') {
       res.end();
       return;
     }

@@ -2,6 +2,7 @@
 
 import type { AgentStep, Message, MessageStatus, ReasoningDetail, StreamEvent } from '../types.js';
 import type { PersistenceAdapter } from './persistence.js';
+import * as canvas from './canvas.js';
 
 /** 生成业务 id：前缀 + 时间戳 base36 + 随机 base36 */
 export function newId(prefix: string): string {
@@ -16,6 +17,26 @@ export function chunkText(text: string, perChunk: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < text.length; i += perChunk) out.push(text.slice(i, i + perChunk));
   return out;
+}
+
+/**
+ * 计算多个源节点的几何中心（多父位置的平均 + 偏移避让）。
+ * 被 refine-module 和 writer-module 共享。
+ */
+export async function computeGeometricCenter(sourceNodeIds: string[]): Promise<{ x: number; y: number }> {
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+  for (const id of sourceNodeIds) {
+    const n = await canvas.getNode(id);
+    if (!n) continue;
+    sumX += n.positionX + 190;
+    sumY += n.positionY + 100;
+    count++;
+  }
+  if (count === 0) return { x: 0, y: 0 };
+  // 偏移避让：往下 200px，让用户能看到原节点
+  return { x: sumX / count - 190, y: sumY / count + 200 };
 }
 
 /**

@@ -20,6 +20,7 @@ import { chunkText } from './_utils.js';
 import {
   matchResponse,
   REFINE_RESPONSE,
+  WRITE_RESPONSE,
   detectAgentToolHint,
   AGENT_PRE_TOOL_THOUGHT,
   AGENT_FINAL_AFTER_TOOL,
@@ -77,6 +78,7 @@ export interface StreamChatParams {
   // provider 路由：决定 reasoning 字段格式（effort vs enabled）以及历史 reasoning_details 是否回填
   provider?: SettingsProvider;
   isRefineTask?: boolean; // 用于 mock 时区分调用类型
+  isWriteTask?: boolean; // 用于 mock 时区分调用类型（撰写任务）
   // 调用方覆写采样参数；未传走端点默认
   temperature?: number;
   // 调用方覆写模型；未传则用 settings.llmModel
@@ -266,7 +268,7 @@ async function* mockDefaultFixtureStream(
   params: StreamChatParams,
   userText: string,
 ): AsyncIterable<StreamEvent> {
-  const cannedResponse = params.isRefineTask ? REFINE_RESPONSE : matchResponse(userText);
+  const cannedResponse = params.isRefineTask ? REFINE_RESPONSE : params.isWriteTask ? WRITE_RESPONSE : matchResponse(userText);
 
   if (params.enableReasoning && cannedResponse.reasoning) {
     for (const chunk of chunkText(cannedResponse.reasoning, 8)) {

@@ -31,6 +31,8 @@ tags:
     description: 节点内消息（含 SSE 流式）
   - name: refine
     description: 提炼任务
+  - name: writer
+    description: 撰写任务（会话灵感文章化）
   - name: settings
     description: LLM 配置（Stage 6 实现）
 
@@ -331,6 +333,70 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/write:
+    post:
+      tags: [writer]
+      summary: 创建撰写任务，返回撰写节点 + 流式拉取 URL
+      description: |
+        撰写是两步操作：
+        1. POST /api/write → 立即返回 node + edges + streamUrl
+        2. GET {streamUrl} → SSE 流式拉取撰写内容
+
+        分两步是为了让前端先把节点和边渲染出来（用户立即看到结果产生），
+        再异步流式填充撰写内容。撰写输出为第一人称叙事文章，
+        内建拟人化改写规则去除AI写作痕迹。
+      operationId: createWrite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WriteRequest'
+            examples:
+              with_request:
+                summary: 指定写作要求
+                value:
+                  sourceNodeIds: [n_a, n_b]
+                  writingRequest: 写成一篇轻松的博客，重点展开供应链问题的商业价值，给投资人看
+              default:
+                summary: 默认撰写（无额外要求）
+                value:
+                  sourceNodeIds: [n_a, n_b]
+                  writingRequest: null
+      responses:
+        '201':
+          description: 撰写节点创建成功，需用 streamUrl 拉取内容
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+
+  /api/write/stream/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+        description: 由 POST /api/write 返回的一次性 token（消费后失效）
+    get:
+      tags: [writer]
+      summary: 拉取撰写任务的流式输出
+      operationId: streamWrite
+      responses:
+        '200':
+          description: SSE 流，事件格式同 /api/nodes/{id}/messages
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404':
+          description: token 不存在或已消费
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/settings:
     get:
       tags: [settings]
@@ -495,10 +561,11 @@ components:
         childNodeId: { type: string }
         edgeKind:
           type: string
-          enum: [branch, refine_input]
+          enum: [branch, refine_input, write_input]
           description: |
             branch: 分支边（单父对话节点）
             refine_input: 提炼输入边（指向多父提炼节点）
+            write_input: 撰写输入边（指向多父撰写节点）
         inheritedUntilSequence:
           type: integer
           nullable: true
@@ -611,6 +678,34 @@ components:
         streamUrl:
           type: string
           example: /api/refine/stream/abc123token
+
+    WriteRequest:
+      type: object
+      required: [sourceNodeIds]
+      properties:
+        sourceNodeIds:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { type: string }
+        writingRequest:
+          type: string
+          nullable: true
+          maxLength: 1000
+          description: 用户的自然语言写作要求（文体、语气、侧重、长度、受众等）
+
+    WriteResult:
+      type: object
+      required: [node, edges, streamUrl]
+      properties:
+        node:
+          $ref: '#/components/schemas/Node'
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/Edge' }
+        streamUrl:
+          type: string
+          example: /api/write/stream/abc123token
 
     SettingsWriteRequest:
       type: object

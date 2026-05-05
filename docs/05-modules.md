@@ -177,6 +177,41 @@ function assembleRefineInput(sourceNodeIds: string[], intent: string | null): Pr
 
 ---
 
+### 7. `writer-module`
+
+**职责：** 撰写任务的两步流程（创建节点 → 流式拉取）+ 多源材料拼装 + 拟人化改写。
+
+**持有的实体：** 不持有持久化实体。撰写节点 / 边由它创建，但归属 canvas-module 管理。
+
+**对外接口：**
+- `POST /api/write` → 创建撰写节点 + 边 + 流式 token
+- `GET /api/write/stream/{token}` → 拉取流式撰写内容
+
+**核心内部函数：**
+
+```typescript
+// 撰写任务的输入组装
+function assembleWriteInput(sourceNodeIds: string[], writingRequest: string | null): Promise<LLMMessages> {
+  // 1. 读取每个源节点的 messages
+  // 2. 严格剥离 reasoningContent（INV-11）
+  // 3. 拼装成 system prompt（含写作原则+拟人化手法+禁止事项）+ 用户写作要求
+}
+```
+
+**关键不变量：** INV-2（written 节点继续对话时不展开父链——同 refined 的处理）、INV-4（write_input 边的多父结构合法性）。
+
+**与 refine 的关键差异：**
+- writer 输出第一人称叙事文章（非结构化纲要）
+- 系统 prompt 内嵌拟人化改写规则（session-writer + humanizer-rewrite 合并为单次 LLM 调用）
+- temperature 0.8（写作需要创造力；refine 用 0.3）
+- 支持用户自定义写作维度：文体、语气、侧重、长度、受众
+
+**依赖：** `canvas-module`（创建撰写节点/边）、`conversation-module`（读源节点 messages、写撰写输出消息）、`llm-client-module`、`settings-module`。
+
+**集成测试入口：** `tests/integration/writer/*.test.ts`
+
+---
+
 ## 依赖拓扑
 
 ```mermaid
@@ -191,6 +226,9 @@ graph TD
     refine --> canvas
     refine --> conversation
     refine --> llm
+    writer --> canvas
+    writer --> conversation
+    writer --> llm
 ```
 
 **实现顺序（叶子优先）：**
@@ -199,6 +237,7 @@ graph TD
 3. `llm-client-module` （依赖 settings）
 4. `conversation-module` （依赖前三个）
 5. `refine-module` （依赖前四个）
+6. `writer-module` （依赖前四个，与 refine 并行）
 
 实现完成的定义：对应模块的所有集成测试从 `skip` 变 `pass`。
 
@@ -212,6 +251,7 @@ graph TD
 | `nodes` | canvas-module |
 | `messages` | conversation-module |
 | `refine` | refine-module |
+| `writer` | writer-module |
 | `settings` | settings-module |
 
 `llm-client-module` 和 `persistence-module` 不直接暴露 HTTP，是内部模块。

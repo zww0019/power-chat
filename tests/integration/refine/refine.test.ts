@@ -182,7 +182,7 @@ describe('refine: 提炼节点不再支持直接发消息', () => {
     });
     const err = events.find((e) => e.type === 'error') as any;
     expect(err).toBeTruthy();
-    expect(err.error).toBe('cannot_send_to_refined_node');
+    expect(err.error).toBe('cannot_send_to_refined_or_written_node');
     // 确认未产生 user_persisted / done（即没有真的写入消息）
     expect(events.find((e) => e.type === 'user_persisted')).toBeUndefined();
     expect(events.find((e) => e.type === 'done')).toBeUndefined();
