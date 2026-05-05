@@ -1,10 +1,6 @@
 import { app, BrowserWindow, ipcMain, type WebContents } from 'electron';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { registerIpcHandlers } from './ipc.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const VITE_DEV_URL = process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5173';
@@ -52,13 +48,21 @@ function createWindow(): void {
     mainWindow.loadURL(VITE_DEV_URL);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    // 生产构建：加载 prototype/dist 下的 index.html
-    mainWindow.loadFile(join(__dirname, '../../prototype/dist/index.html'));
+    // 生产构建：prototype/dist 经 extraResources 挂到 Resources/renderer/。
+    // electron-builder 的 files 字段不支持父级路径 (../prototype/dist 会被静默丢弃)，
+    // 因此走 extraResources，运行时通过 process.resourcesPath 定位。
+    mainWindow.loadFile(join(process.resourcesPath, 'renderer/index.html'));
   }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+// 打包后 __dirname 落在只读的 app.asar 内，persistence 默认路径
+// (__dirname/../../.data/db.json) 写入会失败。改写到 userData 目录。
+if (!process.env.POWER_CHAT_DB) {
+  process.env.POWER_CHAT_DB = join(app.getPath('userData'), 'db.json');
 }
 
 app.whenReady().then(() => {

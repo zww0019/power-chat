@@ -2,16 +2,36 @@
   "name": "@power-chat/electron",
   "version": "0.1.0",
   "private": true,
-  "main": "bootstrap.cjs",
+  "main": "dist/main.cjs",
   "scripts": {
     "dev": "VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "build:electron": "pnpm exec esbuild src/main.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --outfile=dist/main.cjs && cp preload.cjs dist/preload.cjs",
+    "dist": "pnpm exec electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.powerchat.app",
+    "productName": "思考画布",
+    "directories": { "output": "release" },
+    "files": [
+      "dist/**/*",
+      "preload.cjs"
+    ],
+    "extraResources": [
+      { "from": "../src", "to": "src" },
+      { "from": "../prototype/dist", "to": "renderer" }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": ["dmg", "zip"]
+    }
   },
   "dependencies": {
-    "electron": "^32.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
+    "electron": "^32.2.0",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"
   }
