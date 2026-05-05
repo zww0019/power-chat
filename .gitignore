@@ -1,6 +1,8 @@
 node_modules/
 dist/
 build/
+# electron-builder 的 buildResources 目录（图标源文件 svg/png 必须入库）
+!electron/build/
 *.log
 .DS_Store
 .env

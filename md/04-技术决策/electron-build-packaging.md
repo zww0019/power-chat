@@ -42,3 +42,19 @@ if (!process.env.POWER_CHAT_DB) {
 ```
 
 须在 `registerIpcHandlers` 之前完成（在 `getPersistence()` 第一次被调用前生效即可，因为 adapter 缓存到首次调用时才创建）。
+
+## 4. 应用图标资源
+
+**约束**：图标源文件 `electron/build/icon.svg`，构建输入 `electron/build/icon.png`（1024×1024），由 SVG 通过 `rsvg-convert -w 1024 -h 1024 icon.svg -o icon.png` 生成。
+
+**Why**：
+- electron-builder 默认 `directories.buildResources = "build"`，会自动识别 `build/icon.png`（≥512×512）并生成多分辨率 `.icns`，**无需手动 iconutil、无需在 package.json `mac.icon` 显式配置**。
+- SVG 作为可维护源（文本可 diff），PNG 作为构建产物——后者可由前者重新生成，但 PNG 入仓避免每次构建都依赖 rsvg-convert（CI 环境可能没有）。
+- `rsvg-convert` 来自 `librsvg`，渲染质量优于 ImageMagick / qlmanage，是 SVG → PNG 的首选。
+
+**视觉规范**（思考画布 v0.1）：
+- 1024×1024 squircle 衬底，圆角 224px，填充 `#fafaf7`，描边 `#e8e4d8` 2px
+- 中央节点（墨色 `#2d2a26` 渐变）+ 5 条曲线分支 + 末端节点
+- 一个琥珀色高亮节点 `#c89958`（"被点亮的思考"）作为视觉锚点
+
+修改图标流程：改 `icon.svg` → 跑 `rsvg-convert ...` 重新生成 PNG → `pnpm -C electron dist` 验证。
