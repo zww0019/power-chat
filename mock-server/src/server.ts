@@ -8,6 +8,7 @@ import {
   ContextOverflowError,
   MessageReferencedByBranchError,
   NoMessagesForTitleError,
+  NodeAlreadyExistsError,
   NodeNotFoundError,
   NotConfiguredError,
   StreamingNodeError,
@@ -73,6 +74,26 @@ app.delete('/api/nodes/:id', (req, res) =>
 app.delete('/api/edges/:id', (req, res) =>
   respondDelete(res, () => canvas.deleteEdge(req.params.id)),
 );
+
+// 撤销恢复：前端 undo 栈持有完整快照（node + messages + edges），调用此端点事务写回。
+// 边写入不过滤悬空（对端节点不存在的边照常入库），见 canvas.ts::restoreNode 的注释。
+app.post('/api/nodes/restore', async (req, res) => {
+  const { node, messages, edges } = req.body ?? {};
+  if (!node || !Array.isArray(messages) || !Array.isArray(edges)) {
+    res.status(400).json({ error: 'bad_request', message: 'node, messages[], edges[] required' });
+    return;
+  }
+  try {
+    await canvas.restoreNode({ node, messages, edges });
+    res.status(204).end();
+  } catch (e: any) {
+    if (e instanceof NodeAlreadyExistsError) {
+      res.status(409).json({ error: 'already_exists', message: e.message });
+      return;
+    }
+    res.status(500).json({ error: 'internal', message: e.message });
+  }
+});
 
 // === agent 中断（M5 / 决策 25）===
 // 让前端中断按钮 + nodeActions 内的 §7.1 同节点自动中断都通过此端点

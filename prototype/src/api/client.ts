@@ -85,6 +85,10 @@ export const api = {
     return request<void>(`/nodes/${id}`, { method: 'DELETE' });
   },
 
+  async restoreNode(snapshot: { node: Node; messages: Message[]; edges: Edge[] }): Promise<void> {
+    return request<void>('/nodes/restore', { method: 'POST', body: JSON.stringify(snapshot) });
+  },
+
   async deleteEdge(id: string): Promise<void> {
     return request<void>(`/edges/${id}`, { method: 'DELETE' });
   },

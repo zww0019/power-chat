@@ -12,6 +12,7 @@ import { NodeFullscreenModal } from './canvas/NodeFullscreenModal';
 import { Minimap } from './canvas/Minimap';
 import { ToastContainer } from './canvas/ToastContainer';
 import { computeFitToNodesViewport } from './canvas/viewport-fit';
+import { captureNodeDeleteSnapshot, performUndo } from './canvas/nodeActions';
 import { color, text, space, radius, shadow, font, motion } from './styles/theme';
 
 const toolbarIconBtn: CSSProperties = {
@@ -82,6 +83,7 @@ export default function App() {
   const setViewport = useCanvasStore((s) => s.setViewport);
   const setSystemViewport = useCanvasStore((s) => s.setSystemViewport);
   const userHasMovedViewport = useCanvasStore((s) => s.userHasMovedViewport);
+  const pushUndoEntry = useCanvasStore((s) => s.pushUndoEntry);
 
   const [refinePos, setRefinePos] = useState<{ x: number; y: number } | null>(null);
   const [writePos, setWritePos] = useState<{ x: number; y: number } | null>(null);
@@ -116,15 +118,26 @@ export default function App() {
     }).catch((e) => console.error('getSettings failed', e));
   }, [hydrated]);
 
-  // 全局键盘监听：Delete / Backspace 删除 selectedEdgeId 或 activeNodeId。
+  // 全局键盘监听：Cmd/Ctrl+Z 撤销；Delete / Backspace 删除 selectedEdgeId 或 activeNodeId。
+  // Cmd+Z 分支必须先于 Delete 检测执行并 return，避免某些键盘组合下的误判。
+  // 焦点在 input/textarea/contentEditable 时一律不拦截，让浏览器原生快捷键生效（含原生输入撤销）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const target = e.target as HTMLElement | null;
-      if (target) {
-        const tag = target.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+      const inEditable = target
+        ? target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+        : false;
+
+      // Cmd/Ctrl+Z 撤销（不带 Shift——本期不实现 Redo）
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+        if (inEditable) return;
+        e.preventDefault();
+        void performUndo();
+        return;
       }
+
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (inEditable) return;
       const state = useCanvasStore.getState();
       if (state.selectedEdgeId) {
         const edgeId = state.selectedEdgeId;
@@ -137,8 +150,13 @@ export default function App() {
       if (state.activeNodeId) {
         const nodeId = state.activeNodeId;
         e.preventDefault();
+        // 删除前抓快照——必须早于 api.deleteNode 调用，否则后续 store 已被清理读不到
+        const snapshot = captureNodeDeleteSnapshot(nodeId);
         api.deleteNode(nodeId)
-          .then(() => removeNodeAndEdges(nodeId))
+          .then(() => {
+            removeNodeAndEdges(nodeId);
+            if (snapshot) pushUndoEntry({ kind: 'node.delete', snapshot });
+          })
           .catch((err) => {
             const msg = String(err.message ?? err);
             if (msg.includes('409') || msg.includes('streaming')) {
@@ -151,7 +169,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [removeEdge, removeNodeAndEdges]);
+  }, [removeEdge, removeNodeAndEdges, pushUndoEntry]);
 
   // 平移和缩放状态
   const containerRef = useRef<HTMLDivElement>(null);
@@ -225,6 +243,12 @@ export default function App() {
       if (node) {
         if (moved) {
           api.updateNode(d.nodeId, { positionX: node.positionX, positionY: node.positionY }).catch(() => {});
+          // 撤销栈：单次拖拽合并为 1 步（pointerDown→pointerUp 算 1 个 undo）。
+          // INV-10 要求精确还原 → 用 startNodeX/Y（pointerDown 时从 store 读的精确前值），不取近似。
+          // 仅当坐标真的变化才入栈，避免 dist≥4 但坐标恰好回到原位的边界场景污染栈。
+          if (d.startNodeX !== node.positionX || d.startNodeY !== node.positionY) {
+            pushUndoEntry({ kind: 'node.move', nodeId: d.nodeId, prevX: d.startNodeX, prevY: d.startNodeY });
+          }
         } else if (node.collapsed) {
           updateNode(d.nodeId, { collapsed: false });
           api.updateNode(d.nodeId, { collapsed: false }).catch(() => {});

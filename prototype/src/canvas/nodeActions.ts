@@ -6,7 +6,7 @@
 import { useCanvasStore } from '../store/canvasStore';
 import { api } from '../api/client';
 import { toast } from '../store/toastStore';
-import type { Message, Node, StreamEvent } from '../types';
+import type { Edge, Message, Node, StreamEvent } from '../types';
 
 const newMsgId = () => `m_${Math.random().toString(36).slice(2, 11)}`;
 
@@ -511,5 +511,80 @@ export async function performAskOnRefined(refinedNodeId: string): Promise<void> 
   } catch (e) {
     console.error('ask on refined failed', e);
     toast.error(`继续追问失败：${(e as Error).message ?? e}`);
+  }
+}
+
+/**
+ * 抓取删除节点所需的撤销快照：含节点本身、该节点所有消息、所有触及该节点的边。
+ *
+ * 必须在调用 api.deleteNode 之前执行——api.deleteNode 成功后 store.removeNodeAndEdges
+ * 会立即清理关联消息和边，此时再读 store 已无数据可抓。
+ *
+ * 节点不存在（已被并发删除）时返回 null；调用方应跳过入栈。
+ */
+export function captureNodeDeleteSnapshot(nodeId: string): { node: Node; messages: Message[]; edges: Edge[] } | null {
+  const state = useCanvasStore.getState();
+  const node = state.nodes[nodeId];
+  if (!node) return null;
+  const messages = Object.values(state.messages).filter((m) => m.nodeId === nodeId);
+  const edges = Object.values(state.edges).filter(
+    (e) => e.parentNodeId === nodeId || e.childNodeId === nodeId,
+  );
+  return { node, messages, edges };
+}
+
+/**
+ * 执行栈顶撤销动作（Cmd+Z 入口）。
+ *
+ * - node.move：用 pointerDown 时记录的前值精确还原坐标，不取近似（domain §1.7 INV-10）。
+ * - node.delete：调 POST /api/nodes/restore 事务写回节点 + 消息 + 边，再更新 store。
+ *
+ * 失败策略：
+ * - 网络 / 服务端 5xx → 保留条目，用户可重试，toast 提示原因。
+ * - 后端 409（node id 已存在）→ 条目已失效，弹栈并 toast 说明。
+ * - node.move 目标节点已不存在 → 条目失效，弹栈跳过。
+ *
+ * 仅处理 node.move / node.delete 两类（domain §1.7：新建节点不入栈）。
+ */
+export async function performUndo(): Promise<void> {
+  const store = useCanvasStore.getState();
+  const stack = store.undoStack;
+  if (stack.length === 0) return;
+  const entry = stack[stack.length - 1]!;
+
+  try {
+    if (entry.kind === 'node.move') {
+      const node = store.nodes[entry.nodeId];
+      if (!node) {
+        // 节点已不存在（之前被删了又没撤删）——条目失效，弹栈跳过
+        store.popUndoEntry();
+        toast.info('节点已不存在，跳过此条撤销');
+        return;
+      }
+      // INV-10：坐标精确还原，不取近似
+      await api.updateNode(entry.nodeId, { positionX: entry.prevX, positionY: entry.prevY });
+      store.updateNode(entry.nodeId, { positionX: entry.prevX, positionY: entry.prevY });
+      store.popUndoEntry();
+      toast.success('已撤销节点移动');
+    } else if (entry.kind === 'node.delete') {
+      // INV-3：snapshot 中的边（含 branch）原样写回，inheritedUntilSequence 保持不变
+      await api.restoreNode(entry.snapshot);
+      store.upsertNode(entry.snapshot.node);
+      for (const m of entry.snapshot.messages) store.upsertMessage(m);
+      for (const e of entry.snapshot.edges) store.upsertEdge(e);
+      store.popUndoEntry();
+      toast.success('已撤销节点删除');
+    }
+  } catch (e) {
+    const msg = (e as Error).message ?? String(e);
+    if (msg.includes('409') || msg.includes('already_exists')) {
+      // 后端 409：node id 已存在。条目失效，弹栈避免反复尝试
+      store.popUndoEntry();
+      toast.error('节点已被重新创建，无法恢复');
+    } else {
+      // 网络/服务端其他错误：保留条目，用户可重试
+      console.error('undo failed', e);
+      toast.error(`撤销失败：${msg}`);
+    }
   }
 }

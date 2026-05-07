@@ -154,6 +154,37 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/nodes/restore:
+    post:
+      tags: [nodes]
+      summary: 撤销删除节点 — 由前端 undo 栈持有的快照原样写回（节点 + 消息 + 边）
+      description: |
+        前端 undoStack 在 deleteNode 成功后保留 reverse_payload（完整 snapshot）。
+        撤销时调本端点，事务内写回 nodes / messages / edges。
+
+        - 边写入不过滤悬空：对端节点不存在的边照常入库；前端 EdgeLine 渲染层
+          按 `if (!parent || !child) return null` 兜底过滤，对端被独立撤销恢复后
+          连线会自然重现。
+        - 仅 node.delete 入栈；node.move 撤销走 PATCH /api/nodes/{id} 不经此端点。
+      operationId: restoreNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreRequest'
+      responses:
+        '204':
+          description: 已恢复
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: id 已存在（极端：用户在撤销前重新创建了同 id 节点）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/nodes/branch:
     post:
       tags: [nodes]
@@ -642,6 +673,18 @@ components:
       properties:
         parentNodeId: { type: string }
         fromMessageId: { type: string }
+
+    RestoreRequest:
+      type: object
+      required: [node, messages, edges]
+      properties:
+        node: { $ref: '#/components/schemas/Node' }
+        messages:
+          type: array
+          items: { $ref: '#/components/schemas/Message' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/Edge' }
 
     SendMessageRequest:
       type: object

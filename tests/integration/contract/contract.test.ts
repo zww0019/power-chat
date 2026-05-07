@@ -24,6 +24,7 @@ describe('contract: OpenAPI 契约可加载', () => {
     expect(paths).toContain('/api/canvas');
     expect(paths).toContain('/api/nodes');
     expect(paths).toContain('/api/nodes/{id}');
+    expect(paths).toContain('/api/nodes/restore');
     expect(paths).toContain('/api/nodes/branch');
     expect(paths).toContain('/api/nodes/{id}/messages');
     expect(paths).toContain('/api/refine');

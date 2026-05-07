@@ -4,7 +4,7 @@
 // 边的创建只能通过 conversation/refine 模块的 createEdge 内部 API（不暴露）。
 
 import type { Canvas, Node, Edge, Message, NodeType, EdgeKind } from '../types.js';
-import { StreamingNodeError } from '../types.js';
+import { StreamingNodeError, NodeAlreadyExistsError } from '../types.js';
 import { getPersistence } from './persistence.js';
 
 const SINGLE_CANVAS_ID = 'canvas_main';
@@ -134,6 +134,30 @@ export async function deleteNode(id: string): Promise<boolean> {
     }
   });
   return true;
+}
+
+// 撤销删除：从快照原样写回节点 + 所有消息 + 所有触及边。
+// id 已存在 → ConflictError（路由层映射 409），让前端不弹栈、提示用户重试。
+// 边写入不过滤悬空——对端节点不存在的边照常入库，前端 EdgeLine 渲染层兜底过滤
+// （撤销规约：保留边数据；若对端后续被撤销恢复，连线会自然重现）。
+export async function restoreNode(snapshot: {
+  node: Node;
+  messages: Message[];
+  edges: Edge[];
+}): Promise<void> {
+  const p = getPersistence();
+  const existing = await p.get<Node>('nodes', snapshot.node.id);
+  if (existing) throw new NodeAlreadyExistsError(snapshot.node.id);
+
+  await p.transaction(async () => {
+    await p.put('nodes', snapshot.node.id, snapshot.node);
+    for (const m of snapshot.messages) {
+      await p.put('messages', m.id, m);
+    }
+    for (const e of snapshot.edges) {
+      await p.put('edges', e.id, e);
+    }
+  });
 }
 
 // 删除单条边。无副作用——边删除不级联节点或消息。

@@ -30,3 +30,10 @@
 - 流式状态用内存 Set 维护（streamingNodes），非持久化
 - conversation / refine 模块在开始/结束流式时调 markStreaming / unmarkStreaming
 - deleteNode 用 isStreaming 守卫
+
+## 撤销恢复（restoreNode）
+- 接受 `{ node, messages, edges }` 完整快照，事务内 `put` 写回三类记录
+- `id` 已存在 → 抛 `NodeAlreadyExistsError` → 路由层映射 409 `already_exists`
+- 边写入**不过滤悬空**：snapshot 中边的对端节点不存在时照常入库，前端 EdgeLine 渲染层按 `if (!parent || !child) return null` 兜底（用户决策"保留边数据、前端静默不渲染"）
+- 与 R025 配套：仅由前端 undoStack 在用户按 Cmd+Z 时调用，不开放给其它前端流程
+- 端点：`POST /api/nodes/restore`（contract: `RestoreRequest` schema）

@@ -238,6 +238,19 @@ xs 12 / sm 13 / base 15 / md 16 / lg 18 / xl 22；fontWeight 启用 400/500/600/
 - 来源：用户 2026-04-27 在阶段 1/2 五问中明确选择"保留思考上下文一起做" + OpenRouter 官方文档 §Preserving Reasoning
 - 最后确认：2026-04-28
 
+## R025 · 撤销栈仅覆盖节点移动 / 节点删除
+- 入栈范围**仅限**两类动作：`node.move`（拖拽位移结束且 prev≠next）、`node.delete`（删除 API 成功后入栈完整 snapshot）
+- **不入栈**：节点新建（`createNode`）、边删除（`deleteEdge`）、分支创建、提炼创建、撰写创建、消息编辑、设置变更——这些动作按 Cmd+Z 无效
+- 仅前端单向撤销，**不实现 Redo**（不维护 future 栈），中途产生新动作不需清空 future
+- 栈深度 50，超出按 FIFO 淘汰最旧条目；仅内存（不进 zustand persist 白名单），跨会话不保留
+- INV-10 守护：`node.move` 撤销后 `positionX/positionY` 必须**精确等于**前值（不取近似）；entry 仅存 prevX/prevY 即可
+- INV-3 守护：`node.delete` 撤销恢复的边若是 `branch` 边，`inheritedUntilSequence` 必须从 snapshot 原样写回，不重新计算
+- 失败处理：`performUndo` 仅在成功路径调 `popUndoEntry`；网络/服务端可恢复错误保留条目让用户重试；后端 409（id 已存在）属永久错误，弹栈并 toast 告知避免反复尝试
+- 输入框焦点（INPUT/TEXTAREA/contentEditable）时 Cmd+Z 不拦截，让浏览器原生输入撤销生效
+- 实现位置：前端 `prototype/src/store/canvasStore.ts::undoStack` + `prototype/src/canvas/nodeActions.ts::performUndo` + `prototype/src/App.tsx` 的 pointerUp / keydown 注入；后端 `src/modules/canvas.ts::restoreNode` + `POST /api/nodes/restore`（事务恢复 + 409）
+- 来源：用户 2026-05-07 阶段 1/2 五问决策（仅撤销不重做、仅 move/delete 入栈、悬空边保留、深度 50） + domain/02-domain-model.md §1.7 ActionLog / §3.4 reverse_payload
+- 最后确认：2026-05-07
+
 ## R024 · OpenRouter reasoning_details SSE 累积按 index 合并
 - 单个 thinking block 跨多个 SSE 帧 delta 推送（同一 `index`，不同帧分别带 `type/text/signature` 子集）；累积层**必须**按 `index` 合并增量到同一数组元素，**禁止**直接 spread 追加，否则同一 block 被拆成多个不完整元素，下一轮回灌时 Bedrock 上游报 `messages.X.content.Y: Invalid signature in thinking block` 400
 - 合并语义：同 index 时 `text/data/summary` 累加；`type/id/format/signature` 等其它字段后到"非 null/undefined"才覆盖（排除 null 是为防 OpenRouter 用 null 占位反向清空已签名块）

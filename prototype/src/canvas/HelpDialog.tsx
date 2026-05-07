@@ -53,6 +53,7 @@ export function HelpDialog({ onClose }: HelpDialogProps) {
           <ShortcutRow keys={['Enter']} desc="发送消息（节点输入框内）" />
           <ShortcutRow keys={['Shift', 'Enter']} desc="换行（节点输入框内）" />
           <ShortcutRow keys={['Delete']} desc="删除选中边或活跃节点" />
+          <ShortcutRow keys={['⌘/Ctrl', 'Z']} desc="撤销节点移动 / 删除（深度 50，仅当前会话）" />
           <ShortcutRow keys={['Esc']} desc="关闭大屏 / 关闭帮助" />
         </div>
       </Section>

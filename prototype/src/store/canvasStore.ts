@@ -2,6 +2,14 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Canvas, Node, Edge, Message, ReasoningDetail, StreamingState } from '../types';
 
+// Undo 栈条目（仅 node.move / node.delete，新建节点不入栈——R005-undo）
+// 仅内存，不持久化（partialize 白名单不含 undoStack），跨会话不保留——domain §1.7
+export type UndoEntry =
+  | { kind: 'node.move'; nodeId: string; prevX: number; prevY: number }
+  | { kind: 'node.delete'; snapshot: { node: Node; messages: Message[]; edges: Edge[] } };
+
+const UNDO_STACK_LIMIT = 50;
+
 interface CanvasState {
   canvas: Canvas | null;
   nodes: Record<string, Node>;
@@ -22,6 +30,8 @@ interface CanvasState {
   // 启动时若为 false，App 会执行 fit-to-nodes 自动居中；为 true 则尊重 localStorage 已保存的视口。
   // 持久化在 localStorage 中，使"已用过的客户端"重启后保留上次视口；首次启动 / 清缓存 → 走自动居中。
   userHasMovedViewport: boolean;
+  // 撤销栈（仅内存，深度 50，FIFO 淘汰）
+  undoStack: UndoEntry[];
 }
 
 interface AgentStats {
@@ -70,6 +80,10 @@ interface CanvasActions {
   // 与 setViewport 分离：用户手动 vs 系统设定的语义必须可区分，否则启动自动居中本身会被误判为"用户动过"。
   setSystemViewport: (x: number, y: number, zoom: number) => void;
   bumpAgentStat: (kind: 'started' | 'completed' | 'aborted', reason?: string) => void;
+  // 入栈：达到深度时 FIFO 淘汰最早条目
+  pushUndoEntry: (entry: UndoEntry) => void;
+  // 弹栈：成功撤销后调用；失败时不应调用（保留条目让用户重试）
+  popUndoEntry: () => void;
 }
 
 type Store = CanvasState & CanvasActions;
@@ -89,6 +103,7 @@ export const useCanvasStore = create<Store>()(
       agentStats: { started: 0, completed: 0, aborted: 0, byReason: {} },
       hydrated: false,
       userHasMovedViewport: false,
+      undoStack: [],
 
       // 启动时合并后端快照：节点/边/消息以后端为准；canvas viewport 在 userHasMovedViewport=true 时
       // 保留 store 现有值（来自 localStorage），否则用后端值——首次启动后再交给 App 的 fit-to-nodes 钩子覆盖。
@@ -348,6 +363,17 @@ export const useCanvasStore = create<Store>()(
               : s.agentStats.byReason,
           },
         })),
+
+      pushUndoEntry: (entry) =>
+        set((s) => {
+          const next = [...s.undoStack, entry];
+          // FIFO 淘汰：超出深度时砍掉最旧条目（数组头部），保留最近 UNDO_STACK_LIMIT 条
+          if (next.length > UNDO_STACK_LIMIT) next.splice(0, next.length - UNDO_STACK_LIMIT);
+          return { undoStack: next };
+        }),
+
+      popUndoEntry: () =>
+        set((s) => ({ undoStack: s.undoStack.slice(0, -1) })),
     }),
     {
       name: 'power-chat-canvas',

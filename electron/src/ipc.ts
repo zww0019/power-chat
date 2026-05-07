@@ -20,6 +20,7 @@ import {
   ContextOverflowError,
   MessageReferencedByBranchError,
   NoMessagesForTitleError,
+  NodeAlreadyExistsError,
   NodeNotFoundError,
   NotConfiguredError,
   StreamingNodeError,
@@ -137,6 +138,24 @@ const routes: Route[] = [
       const deleted = await canvas.deleteEdge(match![1]!);
       if (!deleted) return buildFailure(404, 'not_found');
       return buildSuccess(204);
+    },
+  },
+  // 撤销恢复：与 mock-server 路由语义对齐，409 表 id 已存在。
+  // 边写入不过滤悬空——见 src/modules/canvas.ts::restoreNode 注释。
+  {
+    method: 'POST',
+    pattern: '/api/nodes/restore',
+    handler: async ({ body }) => {
+      if (!body?.node || !Array.isArray(body?.messages) || !Array.isArray(body?.edges)) {
+        return buildFailure(400, 'bad_request', 'node, messages[], edges[] required');
+      }
+      try {
+        await canvas.restoreNode(body);
+        return buildSuccess(204);
+      } catch (e: any) {
+        if (e instanceof NodeAlreadyExistsError) return buildFailure(409, 'already_exists', e.message);
+        throw e;
+      }
     },
   },
   // 用户编辑消息时触发，删除 sequence ≥ fromSequence 的消息，为新一轮回复腾位。

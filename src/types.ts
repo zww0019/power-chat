@@ -288,6 +288,22 @@ export class StreamingNodeError extends Error {
   }
 }
 
+// 撤销删除节点时若 id 已存在（极端：用户撤销前以同 id 创建了节点；或并发两次撤销同一条目）
+// 路由层映射为 409 Conflict；前端按规约"不弹栈、保留条目、toast 报错"。
+export class NodeAlreadyExistsError extends Error {
+  constructor(nodeId: string) {
+    super(`Node already exists: ${nodeId}`);
+    this.name = 'NodeAlreadyExistsError';
+  }
+}
+
+// 撤销快照请求体（POST /api/nodes/restore）
+export interface RestoreNodeRequest {
+  node: Node;
+  messages: Message[];
+  edges: Edge[];
+}
+
 // 编辑/截断式删除消息时，被分支引用的消息不可改变（2c 硬阻断）：
 // 若 fromSequence ≤ 任一出边 branch 的 inheritedUntilSequence，
 // 截断会让子分支的继承上下文凭空消失/内容静默改变——拒绝操作。
