@@ -13,6 +13,7 @@ import type {
   CreateNodeRequest,
   BranchRequest,
   RefineRequest,
+  WriteRequest,
   StreamEvent,
 } from '../types';
 
@@ -44,7 +45,11 @@ async function request<T>(path: string, init?: RequestInit & { method?: string }
   if (isElectron && window.powerChat) {
     const result = await window.powerChat.request(method, `/api${path.startsWith('/api') ? path.slice(4) : path}`, body);
     if (result.error || result.status >= 400) {
-      throw new Error(`[${result.status}] ${result.error?.message ?? result.error?.error ?? 'unknown'}`);
+      // 同时带 error code 与 message，让上层用 String.includes 区分错误类型时
+      // 与 HTTP 路径（抛整个 JSON body 文本）行为一致
+      const code = result.error?.error ?? 'unknown';
+      const msg = result.error?.message;
+      throw new Error(`[${result.status}] ${code}${msg ? `: ${msg}` : ''}`);
     }
     return result.body as T;
   }
@@ -86,6 +91,13 @@ export const api = {
 
   async updateNode(id: string, patch: Partial<Pick<Node, 'positionX' | 'positionY' | 'collapsed' | 'title'>>): Promise<Node> {
     return request(`/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+  },
+
+  // 用户主动触发节点标题重新生成。
+  // 错误（HTTP 4xx/5xx）由 request() 抛出，调用方负责 toast 提示——
+  // 与"自动生成静默吞错"的旧行为相反，错误必须可见可决策（用户主权 / E015 同思路）。
+  async regenerateNodeTitle(nodeId: string): Promise<{ title: string }> {
+    return request(`/nodes/${nodeId}/regenerate-title`, { method: 'POST' });
   },
 
   async getSettings(): Promise<Settings> {
@@ -165,6 +177,23 @@ export const api = {
   },
 
   async streamRefine(streamUrl: string, onEvent: (e: StreamEvent) => void): Promise<void> {
+    if (isElectron && window.powerChat) {
+      await runStream(streamUrl, undefined, onEvent);
+      return;
+    }
+    const res = await fetch(streamUrl);
+    if (!res.ok || !res.body) {
+      onEvent({ type: 'error', error: `HTTP ${res.status}` });
+      return;
+    }
+    await consumeSSE(res.body, onEvent);
+  },
+
+  async write(req: WriteRequest): Promise<{ node: Node; edges: Edge[]; streamUrl: string }> {
+    return request('/write', { method: 'POST', body: JSON.stringify(req) });
+  },
+
+  async streamWrite(streamUrl: string, onEvent: (e: StreamEvent) => void): Promise<void> {
     if (isElectron && window.powerChat) {
       await runStream(streamUrl, undefined, onEvent);
       return;

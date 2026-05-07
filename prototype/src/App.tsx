@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
-import { Sparkles, HelpCircle, Settings as SettingsIcon, MousePointerClick, Minimize2, Maximize2 } from 'lucide-react';
+import { Sparkles, HelpCircle, Settings as SettingsIcon, MousePointerClick, Minimize2, Maximize2, PenLine } from 'lucide-react';
 import { useCanvasStore } from './store/canvasStore';
 import { api } from './api/client';
 import { CanvasNode } from './canvas/Node';
 import { EdgeLine } from './canvas/Edge';
 import { RefinePopover } from './canvas/RefinePopover';
+import { WritePopover } from './canvas/WritePopover';
 import { SettingsDialog } from './canvas/SettingsDialog';
 import { HelpDialog } from './canvas/HelpDialog';
 import { NodeFullscreenModal } from './canvas/NodeFullscreenModal';
@@ -83,6 +84,7 @@ export default function App() {
   const userHasMovedViewport = useCanvasStore((s) => s.userHasMovedViewport);
 
   const [refinePos, setRefinePos] = useState<{ x: number; y: number } | null>(null);
+  const [writePos, setWritePos] = useState<{ x: number; y: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -185,6 +187,7 @@ export default function App() {
     setActiveNode(null);
     clearSelection();
     setRefinePos(null);
+    setWritePos(null);
     dragRef.current = {
       kind: 'pan',
       startClientX: e.clientX,
@@ -455,6 +458,28 @@ export default function App() {
     setRefinePos(clamped);
   };
 
+  const handleWriteClick = () => {
+    if (selectedNodeIds.length === 0) return;
+    let sumX = 0, sumY = 0;
+    selectedNodeIds.forEach((id) => {
+      const n = nodes[id];
+      if (n) {
+        sumX += n.positionX + 190;
+        sumY += n.positionY + 100;
+      }
+    });
+    const cx = sumX / selectedNodeIds.length;
+    const cy = sumY / selectedNodeIds.length;
+    const screenX = cx * zoom + vx;
+    const screenY = cy * zoom + vy;
+    const rect = containerRef.current!.getBoundingClientRect();
+    const clamped = {
+      x: Math.max(20, Math.min(rect.width - 380, screenX - 180)),
+      y: Math.max(20, Math.min(rect.height - 220, screenY)),
+    };
+    setWritePos(clamped);
+  };
+
   const allNodes = Object.values(nodes);
   const allEdges = Object.values(edges);
 
@@ -574,11 +599,12 @@ export default function App() {
           思考画布
         </div>
 
-        {/* 中：提炼按钮（多选时） */}
+        {/* 中：提炼 / 撰写按钮（多选时） */}
         <div style={{ flex: 1, display: 'flex', justifyContent: 'center', gap: space.s3 }}>
           {selectedNodeIds.length > 0 && (
-            <button
-              onClick={handleRefineClick}
+            <>
+              <button
+                onClick={handleRefineClick}
               style={{
                 pointerEvents: 'auto',
                 display: 'inline-flex',
@@ -599,6 +625,29 @@ export default function App() {
               <Sparkles size={14} strokeWidth={2} />
               提炼 {selectedNodeIds.length} 个节点
             </button>
+            <button
+              onClick={handleWriteClick}
+              style={{
+                pointerEvents: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: `linear-gradient(135deg, ${color.ink700}, ${color.ink900})`,
+                color: '#FFFFFF',
+                border: 'none',
+                padding: '9px 18px',
+                borderRadius: radius.pill,
+                cursor: 'pointer',
+                fontSize: text.sm,
+                fontWeight: 600,
+                letterSpacing: '0.01em',
+                boxShadow: shadow.md,
+              }}
+            >
+              <PenLine size={14} strokeWidth={2} />
+              撰写 {selectedNodeIds.length} 个节点
+            </button>
+            </>
           )}
         </div>
 
@@ -805,6 +854,15 @@ export default function App() {
           selectedNodeIds={selectedNodeIds}
           position={refinePos}
           onClose={() => setRefinePos(null)}
+        />
+      )}
+
+      {/* 撰写弹窗 */}
+      {writePos && (
+        <WritePopover
+          selectedNodeIds={selectedNodeIds}
+          position={writePos}
+          onClose={() => setWritePos(null)}
         />
       )}
 

@@ -22,3 +22,13 @@ build/
 # Test 工具产出
 coverage/
 .jscpd-report/
+
+# Electron 打包产物（dmg / zip / blockmap 等不入库）
+electron/release/
+
+# 本地 Claude Code 配置
+.claude/
+
+# 本地业务规则工作流暂存目录（暂未对外发布）
+business/
+

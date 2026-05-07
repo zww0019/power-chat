@@ -18,8 +18,12 @@ import * as settings from '../../src/modules/settings.js';
 import { getPersistence } from '../../src/modules/persistence.js';
 import {
   ContextOverflowError,
+  MessageReferencedByBranchError,
+  NoMessagesForTitleError,
+  NodeNotFoundError,
   NotConfiguredError,
   StreamingNodeError,
+  TitleGenerationFailedError,
   type StreamEvent,
 } from '../../src/types.js';
 
@@ -29,7 +33,7 @@ interface RpcResult {
   error?: { error: string; message?: string };
 }
 
-type RouteContext = { match: RegExpMatchArray | null; body: any };
+type RouteContext = { match: RegExpMatchArray | null; body: any; query: URLSearchParams };
 type RouteHandler = (ctx: RouteContext) => Promise<RpcResult>;
 
 interface Route {
@@ -135,6 +139,30 @@ const routes: Route[] = [
       return buildSuccess(204);
     },
   },
+  // 用户编辑消息时触发，删除 sequence ≥ fromSequence 的消息，为新一轮回复腾位。
+  // 错误映射顺序与 mock-server/server.ts 完全对齐，确保两条路径（HTTP / IPC）
+  // 对同一错误类型抛出相同的 code，避免 performEditMessage 的 includes 检测在
+  // Electron 环境下漏判 streaming / branch_referenced。
+  {
+    method: 'DELETE',
+    pattern: /^\/api\/nodes\/([^/]+)\/messages$/,
+    handler: async ({ match, query }) => {
+      const fromSequence = Number(query.get('fromSequence'));
+      if (!Number.isInteger(fromSequence) || fromSequence < 0) {
+        return buildFailure(400, 'bad_request', 'fromSequence (non-negative integer) required');
+      }
+      try {
+        const deleted = await conversation.truncateMessages(match![1]!, fromSequence);
+        return buildSuccess(200, { deleted });
+      } catch (e: any) {
+        if (e instanceof StreamingNodeError) return buildFailure(409, 'streaming', e.message);
+        if (e instanceof MessageReferencedByBranchError) {
+          return { status: 409, error: { error: 'branch_referenced', message: e.message }, body: { childNodeIds: e.childNodeIds } };
+        }
+        throw e;
+      }
+    },
+  },
   {
     method: 'POST',
     pattern: '/api/nodes/branch',
@@ -146,6 +174,22 @@ const routes: Route[] = [
         return buildSuccess(201, await conversation.branchNode(body));
       } catch (e: any) {
         return buildFailure(400, 'bad_request', e.message);
+      }
+    },
+  },
+  // 用户主动触发节点标题重新生成（错误映射与 mock-server 严格对齐，E020）
+  {
+    method: 'POST',
+    pattern: /^\/api\/nodes\/([^/]+)\/regenerate-title$/,
+    handler: async ({ match }) => {
+      try {
+        return buildSuccess(200, await conversation.regenerateNodeTitle(match![1]!));
+      } catch (e: any) {
+        if (e instanceof NodeNotFoundError) return buildFailure(404, 'not_found', e.message);
+        if (e instanceof NoMessagesForTitleError) return buildFailure(400, 'empty_node', e.message);
+        if (e instanceof NotConfiguredError) return buildFailure(502, 'not_configured', 'LLM 未配置');
+        if (e instanceof TitleGenerationFailedError) return buildFailure(502, 'llm_failed', e.message);
+        return buildFailure(502, 'llm_failed', e.message ?? String(e));
       }
     },
   },
@@ -195,15 +239,22 @@ const routes: Route[] = [
 ];
 
 async function dispatchRpc(method: string, path: string, body: any): Promise<RpcResult> {
+  // 必须先分离 pathname 再做正则匹配：路由模式末尾有 $ 锚点，
+  // 若直接匹配带 ?fromSequence=0 的完整 path，$ 无法匹配到末尾，导致 404。
+  // query 透传给 handler，既有路由不使用 query，对它们无影响。
+  // URL 构造器要求绝对 URL，用 'http://x' 作为无业务意义的占位 base
+  const url = new URL(path, 'http://x');
+  const pathname = url.pathname;
+  const query = url.searchParams;
   for (const route of routes) {
     if (route.method !== method) continue;
     if (typeof route.pattern === 'string') {
-      if (route.pattern !== path) continue;
-      return route.handler({ match: null, body });
+      if (route.pattern !== pathname) continue;
+      return route.handler({ match: null, body, query });
     }
-    const match = path.match(route.pattern);
+    const match = pathname.match(route.pattern);
     if (!match) continue;
-    return route.handler({ match, body });
+    return route.handler({ match, body, query });
   }
   return buildFailure(404, 'not_found', `No route for ${method} ${path}`);
 }

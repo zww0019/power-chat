@@ -53,6 +53,11 @@ export interface RefineRequest {
   intentQuestion: string | null;
 }
 
+export interface WriteRequest {
+  sourceNodeIds: string[];
+  writingRequest: string | null;
+}
+
 export interface SendMessageRequest {
   content: string;
 }
