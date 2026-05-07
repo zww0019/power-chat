@@ -33,7 +33,7 @@ import type {
 import { getSettings } from './settings.js';
 import { streamChat } from './llm-client.js';
 import { ALL_TOOLS, getToolsAsOpenAIFormat } from './tools/index.js';
-import { newId, nowIso, chunkText } from './_utils.js';
+import { newId, nowIso, chunkText, mergeReasoningDeltas } from './_utils.js';
 
 export interface RunAgentLoopParams {
   // 已组装好的完整 messages（含调用方负责的 system prompt + 对话历史 + 当前 user message）。
@@ -248,8 +248,10 @@ async function* runOneLLMRoundStream(
     }
     if (evt.type === 'reasoning_details') {
       // OpenRouter 结构化思考片段——段内回灌时必须保持原始结构与顺序，
-      // 不能拍平为字符串；调用方拿到 reasoningDetailsBuf 写到 LLMMessage.reasoningDetails
-      result.reasoningDetailsBuf.push(...evt.delta);
+      // 不能拍平为字符串；调用方拿到 reasoningDetailsBuf 写到 LLMMessage.reasoningDetails。
+      // 按 index 合并而非 spread 追加：同一 thinking block 的 type/text/signature 可能分散
+      // 在多帧 delta 中，spread 会把它们拆成多个独立元素，导致 Bedrock 校验 signature 失败
+      result.reasoningDetailsBuf = mergeReasoningDeltas(result.reasoningDetailsBuf, evt.delta);
       yield evt;
       continue;
     }

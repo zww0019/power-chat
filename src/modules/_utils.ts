@@ -110,11 +110,60 @@ export async function accumulateStreamDelta(
     return { contentBuf, reasoningBuf: next, reasoningDetailsBuf, handled: true };
   }
   if (evt.type === 'reasoning_details') {
-    const nextDetails = [...reasoningDetailsBuf, ...evt.delta];
+    const nextDetails = mergeReasoningDeltas(reasoningDetailsBuf, evt.delta);
     await persistAssistantStreaming(p, baseMsg, contentBuf, reasoningBuf, nextDetails);
     return { contentBuf, reasoningBuf, reasoningDetailsBuf: nextDetails, handled: true };
   }
   return { contentBuf, reasoningBuf, reasoningDetailsBuf, handled: false };
+}
+
+// Bedrock 协议中这三个字段在同一 block 内分多帧推送（如 text 先拆成若干 thinking_delta，
+// summary 先拆成若干 summary_delta），必须累加而非覆盖，否则只保留最后一帧导致内容截断。
+// type/id/format/signature 等字段每帧都是完整值，后到帧覆盖即可（也排除了 null 覆盖合法值的风险）
+const REASONING_TEXT_FIELDS = ['text', 'data', 'summary'] as const;
+
+/**
+ * 按 index 合并 OpenRouter reasoning_details 增量到 buffer。
+ *
+ * 修复 OpenRouter→Bedrock→Anthropic Claude 路径下"Invalid signature in thinking block"：
+ * 单个 thinking block 跨多个 SSE 帧推送（同一 index），元数据/文本/签名分散在不同帧。
+ * 直接 spread 追加会把同一 block 拆成多个不完整数组元素，回灌时 Bedrock 校验 signature 失败。
+ *
+ * 合并语义：
+ * - 同 index：text/data/summary 累加；type/id/format/signature 等其它字段后到"非 null/undefined"才覆盖。
+ *   排除 null 是因为 ReasoningDetail.signature 类型是 string|null——null 是 block 未签名时的初始值，
+ *   若用 null 覆盖已有合法 signature 会反向破坏，下一轮回灌仍触发 Bedrock 校验失败
+ * - 无 index 或新 index：作为新元素追加。Bedrock 路径所有帧必带 index，此分支是兜底，
+ *   保证非 Bedrock 协议变体（含同一 mock 测试场景）的旧"按帧追加"行为不被改变
+ *
+ * 返回新数组引用（保持调用方"buffer 引用不可变"假设）。
+ */
+export function mergeReasoningDeltas(
+  buf: ReasoningDetail[],
+  delta: ReasoningDetail[],
+): ReasoningDetail[] {
+  const out = buf.map((e) => ({ ...e }));
+  for (const d of delta) {
+    const existingIdx = typeof d.index === 'number'
+      ? out.findIndex((e) => e.index === d.index)
+      : -1;
+    if (existingIdx < 0) {
+      out.push({ ...d });
+      continue;
+    }
+    const cur = out[existingIdx]!;
+    for (const k of REASONING_TEXT_FIELDS) {
+      if (typeof d[k] === 'string') {
+        cur[k] = (typeof cur[k] === 'string' ? cur[k]! : '') + d[k]!;
+      }
+    }
+    for (const k of Object.keys(d)) {
+      if ((REASONING_TEXT_FIELDS as readonly string[]).includes(k)) continue;
+      const v = d[k];
+      if (v !== undefined && v !== null) cur[k] = v;
+    }
+  }
+  return out;
 }
 
 /**

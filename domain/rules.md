@@ -237,3 +237,11 @@ xs 12 / sm 13 / base 15 / md 16 / lg 18 / xl 22；fontWeight 启用 400/500/600/
 - **范围限定 provider=openrouter**：其他 provider 不需要此路径（DeepSeek 走 reasoning_content；OpenAI o1 服务端管理状态；custom 协议未知）
 - 来源：用户 2026-04-27 在阶段 1/2 五问中明确选择"保留思考上下文一起做" + OpenRouter 官方文档 §Preserving Reasoning
 - 最后确认：2026-04-28
+
+## R024 · OpenRouter reasoning_details SSE 累积按 index 合并
+- 单个 thinking block 跨多个 SSE 帧 delta 推送（同一 `index`，不同帧分别带 `type/text/signature` 子集）；累积层**必须**按 `index` 合并增量到同一数组元素，**禁止**直接 spread 追加，否则同一 block 被拆成多个不完整元素，下一轮回灌时 Bedrock 上游报 `messages.X.content.Y: Invalid signature in thinking block` 400
+- 合并语义：同 index 时 `text/data/summary` 累加；`type/id/format/signature` 等其它字段后到"非 null/undefined"才覆盖（排除 null 是为防 OpenRouter 用 null 占位反向清空已签名块）
+- 兜底：无 index 或新 index 元素作为新数组元素追加，保留旧"按帧追加"行为给 mock 与未来非 Bedrock 协议变体
+- 实现位置：`src/modules/_utils.ts::mergeReasoningDeltas`；`accumulateStreamDelta` 与 `agent.runOneLLMRoundStream` 的 reasoning_details 分支均必须经此函数
+- 来源：用户 2026-05-07 报错"OpenRouter 思考模型 400 Invalid signature in thinking block"——根因为 SSE 累积按帧 spread 把 Anthropic Claude thinking block 拆成多个无 signature 元素
+- 最后确认：2026-05-07
