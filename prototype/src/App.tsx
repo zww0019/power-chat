@@ -56,7 +56,7 @@ function ToolbarIconButton({
   );
 }
 
-// 画布缩放范围常量：wheel 缩放和 pinch 手势缩放共用，保持体验一致
+// 画布缩放范围常量：wheel 缩放与 macOS 双指捏合（以 ctrlKey wheel 形式派发）共用
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 2;
 
@@ -393,47 +393,6 @@ export default function App() {
         flushPersist();
       }
     };
-  }, [setViewport]);
-
-  // macOS Electron 双指捏合手势缩放：主进程通过 before-input-event 拦截 gesturePinch*
-  // 并通过 IPC 发送 pinch-gesture 事件。渲染进程在此订阅并将 scale 转换为视口缩放，
-  // 围绕双指中心点 (pivot) 保持内容贴合。手势结束 (pinchEnd) 时调用 setViewport 持久化。
-  useEffect(() => {
-    const pw = (window as any).powerChat;
-    if (!pw?.isElectron || !pw?.onPinchGesture) return;
-
-    let pinchStartZoom = 1;
-    let pinchStartVx = 0;
-    let pinchStartVy = 0;
-
-    const unsub = pw.onPinchGesture((data: any) => {
-      const el = containerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const pivotX = data.x - rect.left;
-      const pivotY = data.y - rect.top;
-
-      if (data.type === 'pinchBegin') {
-        pinchStartZoom = zoomRef.current;
-        pinchStartVx = vxRef.current;
-        pinchStartVy = vyRef.current;
-      } else if (data.type === 'pinchUpdate') {
-        const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStartZoom * data.scale));
-        const ratio = newZoom / pinchStartZoom;
-        const newVx = pivotX - (pivotX - pinchStartVx) * ratio;
-        const newVy = pivotY - (pivotY - pinchStartVy) * ratio;
-        zoomRef.current = newZoom;
-        vxRef.current = newVx;
-        vyRef.current = newVy;
-        setZoom(newZoom);
-        setVx(newVx);
-        setVy(newVy);
-      } else if (data.type === 'pinchEnd') {
-        setViewport(vxRef.current, vyRef.current, zoomRef.current);
-      }
-    });
-
-    return unsub;
   }, [setViewport]);
 
   const handleRefineClick = () => {

@@ -59,7 +59,20 @@ if (!process.env.POWER_CHAT_DB) {
 
 修改图标流程：改 `icon.svg` → 跑 `rsvg-convert ...` 重新生成 PNG → `pnpm -C electron dist:mac` 验证。
 
-## 5. 多平台构建（CI/CD）
+## 5. macOS 双指捏合缩放必须保留 setVisualZoomLevelLimits
+
+> L2 约束 · 2026-05-07 修复双指缩放回归
+
+**约束**：`electron/src/main.ts` 的 `createWindow()` 中**必须**保留：
+```ts
+mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+```
+
+**Why**：Chromium 默认对 macOS 触控板双指捏合做 pinch-to-page-zoom（直接放大整个 web 内容，不路由到 web 层事件）。`setVisualZoomLevelLimits(1, 1)` 把可视化缩放下限/上限都锁为 1（即禁用），Chromium 转而把 pinch 派发为 `wheel + ctrlKey=true` 事件给渲染进程，由 `App.tsx` 的 wheel handler 中 `if (e.ctrlKey || e.metaKey) { 缩放 }` 路径接管。删了这一行画布双指缩放立即失效。
+
+**反面教训**：曾尝试用 `webContents.on('before-input-event', ...)` 拦截 `input.type === 'gesturePinchBegin/Update/End'` 替代本约束，**实际无效**——这些 input.type 字符串不在 Electron 公开 API 范围内（公开类型仅 keyboard/mouse），拦截器从未命中。该方案的 commit 同时把 setVisualZoomLevelLimits 误删，造成回归。任何替代方案在合并前必须经 macOS 真机双指捏合验证。
+
+## 6. 多平台构建（CI/CD）
 
 > L3 实现参考 · 2026-05-07 GitHub Actions release workflow
 
