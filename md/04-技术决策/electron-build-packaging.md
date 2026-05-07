@@ -57,4 +57,30 @@ if (!process.env.POWER_CHAT_DB) {
 - 中央节点（墨色 `#2d2a26` 渐变）+ 5 条曲线分支 + 末端节点
 - 一个琥珀色高亮节点 `#c89958`（"被点亮的思考"）作为视觉锚点
 
-修改图标流程：改 `icon.svg` → 跑 `rsvg-convert ...` 重新生成 PNG → `pnpm -C electron dist` 验证。
+修改图标流程：改 `icon.svg` → 跑 `rsvg-convert ...` 重新生成 PNG → `pnpm -C electron dist:mac` 验证。
+
+## 5. 多平台构建（CI/CD）
+
+> L3 实现参考 · 2026-05-07 GitHub Actions release workflow
+
+**触发**：`push` 到 `main` 分支自动构建三平台产物，发布为 GitHub prerelease；同时支持 `workflow_dispatch` 手动触发。
+
+**平台/架构矩阵**：
+- macOS: `universal`（arm64 + x64 合一）→ dmg + zip
+- Windows: x64 → nsis 安装包 + zip
+- Linux: x64 → AppImage + deb
+
+每个平台用对应 runner（macos-latest / windows-latest / ubuntu-latest）原生构建，**不做交叉编译**——electron-builder 的跨平台构建对 native 工具链依赖多，原生 runner 最稳。
+
+**Job 串联**：`test (ubuntu)` → `build (matrix)` → `release (ubuntu)`。test 失败则不浪费 build 资源；matrix 设 `fail-fast: false`，单平台失败不影响其他平台继续。
+
+**Tag 命名**：`v{package.version}-build.{github.run_number}`，避免与未来正式 release tag 冲突，且 `run_number` 单调递增不会撞。
+
+**不签名**：CI 环境无证书，靠 `CSC_IDENTITY_AUTO_DISCOVERY: "false"` 阻止 electron-builder 在 macOS runner 上自动搜索 keychain（不设此变量构建会失败，因找不到任何身份）。Windows nsis 同理无签名。用户首次启动会看到系统警告但能用。
+
+**关键依赖声明**：`electron-builder` 必须在 `electron/package.json` 的 devDependencies 显式声明（已加），不可只放在根 `package.json`。否则 `pnpm -C electron dist:*` 在 hoist 行为变更时会失败。
+
+**对应文件**：
+- `.github/workflows/release.yml`
+- `electron/package.json` 的 `build.{mac,win,linux}` 配置
+- 根 `package.json` 的 `build:mac` / `build:win` / `build:linux` 脚本

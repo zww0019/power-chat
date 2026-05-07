@@ -19,14 +19,16 @@ importers:
         version: 8.0.5
 
   electron:
-    dependencies:
-      electron:
-        specifier: ^32.2.0
-        version: 32.3.3
     devDependencies:
       '@types/node':
         specifier: ^22.7.4
         version: 22.19.17
+      electron:
+        specifier: ^32.2.0
+        version: 32.3.3
+      electron-builder:
+        specifier: ^25.1.8
+        version: 25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2

@@ -18,7 +18,9 @@
     "test": "POWER_CHAT_DB=/tmp/power-chat-test.json USE_MOCK_LLM=1 USE_MOCK_TOOLS=1 concurrently -k -s first -n mock,test -c blue,green \"pnpm -C mock-server dev\" \"wait-on http://localhost:3001/api/canvas && pnpm -C tests test\"",
     "test:watch": "POWER_CHAT_DB=/tmp/power-chat-test.json USE_MOCK_LLM=1 USE_MOCK_TOOLS=1 concurrently -k -s first -n mock,test -c blue,green \"pnpm -C mock-server dev\" \"wait-on http://localhost:3001/api/canvas && pnpm -C tests test:watch\"",
     "install:all": "pnpm install",
-    "build:mac": "pnpm -C prototype build && pnpm -C electron build:electron && pnpm -C electron dist"
+    "build:mac": "pnpm -C prototype build && pnpm -C electron build:electron && pnpm -C electron dist:mac",
+    "build:win": "pnpm -C prototype build && pnpm -C electron build:electron && pnpm -C electron dist:win",
+    "build:linux": "pnpm -C prototype build && pnpm -C electron build:electron && pnpm -C electron dist:linux"
   },
   "devDependencies": {
     "concurrently": "^9.0.1",

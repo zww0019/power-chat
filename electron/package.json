@@ -7,7 +7,9 @@
     "dev": "VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "type-check": "tsc --noEmit",
     "build:electron": "pnpm exec esbuild src/main.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --outfile=dist/main.cjs && cp preload.cjs dist/preload.cjs",
-    "dist": "pnpm exec electron-builder --mac"
+    "dist:mac": "pnpm exec electron-builder --mac",
+    "dist:win": "pnpm exec electron-builder --win",
+    "dist:linux": "pnpm exec electron-builder --linux"
   },
   "build": {
     "appId": "com.powerchat.app",
@@ -23,7 +25,23 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"]
+      "target": [
+        { "target": "dmg", "arch": ["universal"] },
+        { "target": "zip", "arch": ["universal"] }
+      ]
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ]
+    },
+    "linux": {
+      "category": "Office",
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] }
+      ]
     }
   },
   "dependencies": {
@@ -31,6 +49,7 @@
   "devDependencies": {
     "@types/node": "^22.7.4",
     "electron": "^32.2.0",
+    "electron-builder": "^25.1.8",
     "esbuild": "^0.24.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"
