@@ -145,7 +145,11 @@ export type StreamEvent =
       truncated?: boolean;
     }
   // agent loop 终结：reason 区分正常完成 vs 各种触限/中断；之后会接 content 流（Final Response）
-  | { type: 'agent_final'; reason: AgentFinalReason };
+  | { type: 'agent_final'; reason: AgentFinalReason }
+  // writer Phase 2 humanizer-rewrite 三角迭代进度（writer.ts §Phase 2）：
+  // start → 进入 rewrite 阶段；executing → 执行者改写中；evaluating → 批评者评分中；
+  // judging → 裁判读到本轮分数；score 仅 judging 阶段携带
+  | { type: 'rewrite_round'; round: number; phase: 'start' | 'executing' | 'evaluating' | 'judging'; score?: number };
 
 // agent loop 的终止原因
 export type AgentFinalReason =

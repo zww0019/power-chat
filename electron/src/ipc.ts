@@ -14,7 +14,9 @@ import type { IpcMain, WebContents } from 'electron';
 import * as canvas from '../../src/modules/canvas.js';
 import * as conversation from '../../src/modules/conversation.js';
 import * as refine from '../../src/modules/refine.js';
+import * as writer from '../../src/modules/writer.js';
 import * as settings from '../../src/modules/settings.js';
+import * as abortRegistry from '../../src/modules/abort-registry.js';
 import { getPersistence } from '../../src/modules/persistence.js';
 import {
   ContextOverflowError,
@@ -227,6 +229,31 @@ const routes: Route[] = [
     },
   },
   {
+    method: 'POST',
+    pattern: '/api/write',
+    handler: async ({ body }) => {
+      if (!Array.isArray(body?.sourceNodeIds) || body.sourceNodeIds.length === 0) {
+        return buildFailure(400, 'bad_request', 'sourceNodeIds required');
+      }
+      try {
+        return buildSuccess(201, await writer.createWrite(body));
+      } catch (e: any) {
+        return buildFailure(400, 'bad_request', e.message);
+      }
+    },
+  },
+  // agent 中断（M5 / 决策 25）：与 mock-server:100 行为对齐——
+  // 成功取消返 204，节点未在流式中返 404 not_streaming
+  {
+    method: 'POST',
+    pattern: /^\/api\/nodes\/([^/]+)\/messages\/abort$/,
+    handler: async ({ match }) => {
+      const ok = abortRegistry.abortStream(match![1]!, 'user_aborted');
+      if (!ok) return buildFailure(404, 'not_streaming', 'no active stream for node');
+      return buildSuccess(204);
+    },
+  },
+  {
     method: 'GET',
     pattern: '/api/settings',
     handler: async () => buildSuccess(200, await settings.getSettingsMasked()),
@@ -288,10 +315,16 @@ async function openStream(path: string, body: any): Promise<AsyncIterable<Stream
     return wrapStream(conversation.sendMessage({ nodeId: msgMatch[1]!, content: body.content }));
   }
 
-    // GET /api/refine/stream/:token（HTTP 侧是 GET，IPC 侧统一走 stream-start，path 原样透传）
+  // /api/refine/stream/:token（IPC 侧统一走 stream-start，与 HTTP GET 语义等价，path 原样透传）
   const streamMatch = path.match(/^\/api\/refine\/stream\/([^/]+)$/);
   if (streamMatch) {
     return wrapStream(refine.streamRefine(streamMatch[1]!));
+  }
+
+  // /api/write/stream/:token（与 refine 同构）
+  const writeStreamMatch = path.match(/^\/api\/write\/stream\/([^/]+)$/);
+  if (writeStreamMatch) {
+    return wrapStream(writer.streamWrite(writeStreamMatch[1]!));
   }
 
   return errorOnce(`No stream route for ${path}`);
