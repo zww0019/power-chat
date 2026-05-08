@@ -2,6 +2,12 @@
   "name": "@power-chat/electron",
   "version": "0.1.0",
   "private": true,
+  "description": "思考画布 - 基于 AI 的可视化思维画布桌面应用",
+  "author": "zww",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zww0019/power-chat.git"
+  },
   "main": "dist/main.cjs",
   "scripts": {
     "dev": "pnpm build:electron && VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
@@ -14,6 +20,7 @@
   "build": {
     "appId": "com.powerchat.app",
     "productName": "思考画布",
+    "publish": null,
     "directories": { "output": "release" },
     "files": [
       "dist/**/*",

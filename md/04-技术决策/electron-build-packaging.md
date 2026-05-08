@@ -114,3 +114,33 @@ mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
 **反面教训**：把锅推给 watch 模式之前，先确认 dist 是否落后于 src（`stat -f "%m" dist/main.cjs src/ipc.ts` 比对时间戳，或 `grep` 关键字符串验证产物内容）。watch 是工具升级，但前置 build:electron 才是兜底——前者失效时后者仍能保证启动一致性。
 
 **不影响打包流程**：根 `package.json` 的 `build:mac/win/linux` 已显式串行 `pnpm -C prototype build && pnpm -C electron build:electron && pnpm -C electron dist:*`，发布路径独立。本约束仅修 dev 工作流。
+
+## 8. electron/package.json 包元数据：CI 环境字段强约束
+
+> L2 约束 · 2026-05-08 修复 GitHub Actions 三平台构建中断
+
+**约束**：`electron/package.json` **必须**声明 `repository` / `description` / `author` 三个顶层字段，且 `build` 配置内**必须**显式 `"publish": null`。
+
+```json
+{
+  "description": "...",
+  "author": "...",
+  "repository": { "type": "git", "url": "https://github.com/<owner>/<repo>.git" },
+  "build": {
+    "publish": null,
+    ...
+  }
+}
+```
+
+**Why**：electron-builder 25.x 在 CI 环境（检测到 `CI=true`）会自动进入 publish 探测流程——优先读子目录 `package.json` 的 `repository` 字段，缺失时回退解析 `.git/config`。在 `actions/checkout@v4` 拉到的仓库中，从 `electron/` 子目录上下文解析 `.git/config` 不可靠，最终报 `⨯ Cannot detect repository by .git/config` 中断三平台构建。
+
+修复必须**双管齐下**：
+1. 补 `repository` 字段：让探测在配置层得到答案，不回退 `.git/config`
+2. 设 `build.publish: null`：从根本上让 electron-builder 跳过 publish 流程（本项目发布由 `.github/workflows/release.yml` 中的 `softprops/action-gh-release@v2` 接管，electron-builder 内置 publish **完全不应启用**）
+
+`description` / `author` 同步补齐：electron-builder 在打包阶段也会校验包元数据完整性，缺失会输出 warning（虽不阻断但污染日志）。
+
+**反面教训**：单独补 `repository` 字段也能让本次报错消失，但 electron-builder 后续版本可能扩大 publish 探测的检查项（如校验 url 可达性、检查 GH_TOKEN 权限等）。`publish: null` 是断根方案；只补字段是治标。
+
+**与 release.yml 的契约**：本项目发布**严格分两段**——electron-builder 只产 artifact（`pnpm dist:*` → `electron/release/*.{dmg,zip,exe,AppImage,deb}`），artifact 的上传与 Release 创建由 `softprops/action-gh-release` 单独 job 完成。任何在 `electron/package.json` 的 `build.publish` 写非 null 值的改动都会破坏这个契约——electron-builder 会重复发布或与 action-gh-release 冲突。
