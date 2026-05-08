@@ -97,3 +97,20 @@ mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
 - `.github/workflows/release.yml`
 - `electron/package.json` 的 `build.{mac,win,linux}` 配置
 - 根 `package.json` 的 `build:mac` / `build:win` / `build:linux` 脚本
+
+## 7. Electron dev 必须前置 build:electron
+
+> L2 约束 · 2026-05-08 修复撤销删除 404 回归
+
+**约束**：`electron/package.json` 的 `dev` 脚本**必须**前置 `pnpm build:electron`：
+```json
+"dev": "pnpm build:electron && VITE_DEV_SERVER_URL=http://localhost:5173 electron ."
+```
+
+**Why**：Electron 主进程入口 `package.json#main` 指向 `dist/main.cjs`（esbuild 一次性 bundle 产物），而非源码 `src/main.ts`。若 dev 启动只跑 `electron .`，则使用上一次的旧产物——源码侧对 `ipc.ts` / `main.ts` 的任何改动（新增 IPC 路由、调整窗口配置、改持久化 hook）都不会生效。
+
+历史回归：2026-05-07 加 `POST /api/nodes/restore` 路由后，dist/main.cjs 未重编，撤销删除报 `[404] not_found: No route for POST /api/nodes/restore`。错误信息形如 `No route for {METHOD} {PATH}` 即来自 `ipc.ts` 的 `dispatchRpc` 兜底分支，是「源码已写但产物未跟进」的典型征兆。
+
+**反面教训**：把锅推给 watch 模式之前，先确认 dist 是否落后于 src（`stat -f "%m" dist/main.cjs src/ipc.ts` 比对时间戳，或 `grep` 关键字符串验证产物内容）。watch 是工具升级，但前置 build:electron 才是兜底——前者失效时后者仍能保证启动一致性。
+
+**不影响打包流程**：根 `package.json` 的 `build:mac/win/linux` 已显式串行 `pnpm -C prototype build && pnpm -C electron build:electron && pnpm -C electron dist:*`，发布路径独立。本约束仅修 dev 工作流。
