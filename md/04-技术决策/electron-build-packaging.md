@@ -144,3 +144,37 @@ mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
 **反面教训**：单独补 `repository` 字段也能让本次报错消失，但 electron-builder 后续版本可能扩大 publish 探测的检查项（如校验 url 可达性、检查 GH_TOKEN 权限等）。`publish: null` 是断根方案；只补字段是治标。
 
 **与 release.yml 的契约**：本项目发布**严格分两段**——electron-builder 只产 artifact（`pnpm dist:*` → `electron/release/*.{dmg,zip,exe,AppImage,deb}`），artifact 的上传与 Release 创建由 `softprops/action-gh-release` 单独 job 完成。任何在 `electron/package.json` 的 `build.publish` 写非 null 值的改动都会破坏这个契约——electron-builder 会重复发布或与 action-gh-release 冲突。
+
+## 9. Linux deb/AppImage 要求 author 为对象（含 email）
+
+> L2 约束 · 2026-05-09 修复 GitHub Actions Linux deb 构建中断
+
+**约束**：`electron/package.json` 顶层 `author` 字段**必须**为对象格式，包含 `name` 与 `email` 两个键。**不得**写为纯字符串。
+
+```json
+"author": {
+  "name": "zww",
+  "email": "ddfeww86@gmail.com"
+}
+```
+
+**Why**：electron-builder 25.x 的 `FpmTarget.js`（负责 deb / AppImage 打包）拼装 maintainer 字段时优先级如下：
+
+1. `build.linux.maintainer` 显式值
+2. `author` 对象的 `${name} <${email}>`，**两个键都必须存在**
+3. 都缺则抛 `Please specify author 'email' in the application package.json` 中断
+
+纯字符串 author（如 `"author": "zww"`）会被解析为对象后 `email` 为 `null`，命中分支 3 中断。mac dmg / win nsis 不走 `FpmTarget.js`，无此约束——这是为什么 c872b7c（第 8 节）只补字符串 author 时 mac/win 通过、Linux 仍中断。
+
+**修复二选一，本项目选 author 对象路径**：
+- 选 author 对象：npm 元数据 + 三平台包内 metadata 都受益，统一来源
+- 选 `build.linux.maintainer`：email 仅出现在 deb 包，暴露面小，但维护两处来源易漂移
+
+**反面教训**：不要试图通过"修字符串 author 的解析逻辑"绕过——`FpmTarget.js` 的 `email == null` 判断在 electron-builder 内部，无法 patch。唯一干净的修法是让 author 在源头就是对象。
+
+**自检命令**：本机无法跑 Linux 构建时，用 node 验证字段拼装：
+```bash
+node -e "const p = require('./electron/package.json'); console.log(p.author.name + ' <' + p.author.email + '>');"
+# 期望输出: zww <ddfeww86@gmail.com>
+```
+输出符合 `name <email>` 格式即说明 deb maintainer 字段会被正确生成。

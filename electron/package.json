@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "思考画布 - 基于 AI 的可视化思维画布桌面应用",
-  "author": "zww",
+  "author": {
+    "name": "zww",
+    "email": "ddfeww86@gmail.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/zww0019/power-chat.git"
