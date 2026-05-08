@@ -526,7 +526,16 @@ export function captureNodeDeleteSnapshot(nodeId: string): { node: Node; message
   const state = useCanvasStore.getState();
   const node = state.nodes[nodeId];
   if (!node) return null;
-  const messages = Object.values(state.messages).filter((m) => m.nodeId === nodeId);
+  // 规范化流式中间态：前端 store 的 message.status 与后端流式状态可能短暂不同步
+  // （流刚结束 status 未及时翻 'complete'）。恢复时 streamingByNode 不会被同步重建，
+  // 写回 status='streaming' 的消息会让 UI 长期显示"流式中"但实际无 stream 在跑，引发状态错乱。
+  // 转为 'error' 保留已累积的内容，让用户看到中断点而非伪流式态。
+  // filter + map 合并为单次遍历，减少中间数组分配
+  const messages = Object.values(state.messages).reduce<Message[]>((acc, m) => {
+    if (m.nodeId !== nodeId) return acc;
+    acc.push(m.status === 'streaming' ? { ...m, status: 'error' as const } : m);
+    return acc;
+  }, []);
   const edges = Object.values(state.edges).filter(
     (e) => e.parentNodeId === nodeId || e.childNodeId === nodeId,
   );

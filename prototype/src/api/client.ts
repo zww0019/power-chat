@@ -35,15 +35,21 @@ declare global {
 
 const isElectron = typeof window !== 'undefined' && !!window.powerChat;
 
-async function request<T>(path: string, init?: RequestInit & { method?: string }): Promise<T> {
+// init.body 接受对象或字符串，两种形式在内部分别处理：
+// - 对象：IPC 路径走结构化克隆直传，保留 undefined 可选字段（Message.reasoningContent /
+//   agentTrace / reasoningDetails 等），避免 JSON.stringify 静默丢弃这些字段；
+//   fetch 路径在下方统一序列化为字符串。
+// - 字符串：视为已序列化，IPC 路径反序列化为对象后传入，fetch 路径直接使用。
+//   保留字符串形式是为了不改动现有调用点（createNode / branchNode 等已 JSON.stringify）。
+async function request<T>(path: string, init?: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<T> {
   const method = init?.method ?? 'GET';
-  let body: unknown = undefined;
-  if (init?.body) {
-    body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
+  let ipcBody: unknown = undefined;
+  if (init?.body !== undefined && init?.body !== null) {
+    ipcBody = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
   }
 
   if (isElectron && window.powerChat) {
-    const result = await window.powerChat.request(method, `/api${path.startsWith('/api') ? path.slice(4) : path}`, body);
+    const result = await window.powerChat.request(method, `/api${path.startsWith('/api') ? path.slice(4) : path}`, ipcBody);
     if (result.error || result.status >= 400) {
       // 同时带 error code 与 message，让上层用 String.includes 区分错误类型时
       // 与 HTTP 路径（抛整个 JSON body 文本）行为一致
@@ -54,11 +60,15 @@ async function request<T>(path: string, init?: RequestInit & { method?: string }
     return result.body as T;
   }
 
-  // 浏览器 dev：fetch
+  // 浏览器 dev：fetch body 必须是字符串，对象类型需先序列化
+  const rawBody = init?.body;
+  const fetchBody = rawBody === undefined || rawBody === null
+    ? undefined
+    : typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody);
   const res = await fetch(`/api${path.startsWith('/api') ? path.slice(4) : path}`, {
     method,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    body: init?.body,
+    body: fetchBody,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
@@ -86,7 +96,10 @@ export const api = {
   },
 
   async restoreNode(snapshot: { node: Node; messages: Message[]; edges: Edge[] }): Promise<void> {
-    return request<void>('/nodes/restore', { method: 'POST', body: JSON.stringify(snapshot) });
+    // 直传对象而非 JSON.stringify(snapshot)：序列化会丢弃 Message/Node 上 undefined 的可选字段
+    // （reasoningContent / wasResumed / agentTrace / reasoningDetails 等），导致后端写回不完整、
+    // 后续读取时类型错位。IPC 路径走结构化克隆保留全字段；fetch 路径在 request() 内部统一序列化。
+    return request<void>('/nodes/restore', { method: 'POST', body: snapshot });
   },
 
   async deleteEdge(id: string): Promise<void> {
