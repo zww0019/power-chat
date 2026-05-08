@@ -32,3 +32,4 @@ electron/release/
 # 本地业务规则工作流暂存目录（暂未对外发布）
 business/
 
+/.mcco_uploads
