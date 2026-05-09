@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MessageSquare, Sparkle, Maximize2, Minimize2, RotateCw, RefreshCw, CornerDownRight } from 'lucide-react';
+import { MessageSquare, Sparkle, Feather, Maximize2, Minimize2, RotateCw, RefreshCw, CornerDownRight } from 'lucide-react';
 import { useCanvasStore, selectMessagesOfNode, selectBranchSourceOfNode } from '../store/canvasStore';
 import { api } from '../api/client';
 import type { Node as NodeType, Message } from '../types';
@@ -42,10 +42,12 @@ interface NodeProps {
 // 展开态固定宽 360，折叠态由 CollapsedCard 覆写为 200——R013 几何硬约束。
 function buildNodeStyle(node: NodeType, isActive: boolean, isSelected: boolean, dimmed: boolean): React.CSSProperties {
   const isRefined = node.type === 'refined';
+  const isWritten = node.type === 'written';
   let border: string;
   if (isActive) border = `1.5px solid ${color.accent500}`;
   else if (isSelected) border = `1.5px solid ${color.moss500}`;
   else if (isRefined) border = `1px solid ${color.accent300}`;
+  else if (isWritten) border = `1px solid ${color.moss300}`;
   else border = `0.5px solid ${color.ink200}`;
 
   return {
@@ -53,7 +55,7 @@ function buildNodeStyle(node: NodeType, isActive: boolean, isSelected: boolean, 
     left: node.positionX,
     top: node.positionY,
     width: 360,
-    background: isRefined ? color.warm : color.paper,
+    background: isRefined ? color.warm : isWritten ? color.mint : color.paper,
     border,
     borderRadius: radius.lg,
     boxShadow: isActive ? shadow.lg : shadow.md,
@@ -72,6 +74,7 @@ function buildNodeStyle(node: NodeType, isActive: boolean, isSelected: boolean, 
 export function CanvasNode({ node, isActive, isSelected, isStreaming, dimmed, onPointerDownHeader }: NodeProps) {
   const messages = useCanvasStore((s) => selectMessagesOfNode(s, node.id));
   const isRefined = node.type === 'refined';
+  const isWritten = node.type === 'written';
   const styleBase = buildNodeStyle(node, isActive, isSelected, dimmed);
 
   if (node.collapsed) {
@@ -79,6 +82,7 @@ export function CanvasNode({ node, isActive, isSelected, isStreaming, dimmed, on
       <CollapsedCard
         node={node}
         isRefined={isRefined}
+        isWritten={isWritten}
         isStreaming={isStreaming}
         isActive={isActive}
         styleBase={styleBase}
@@ -94,6 +98,7 @@ export function CanvasNode({ node, isActive, isSelected, isStreaming, dimmed, on
       isActive={isActive}
       isStreaming={isStreaming}
       isRefined={isRefined}
+      isWritten={isWritten}
       styleBase={styleBase}
       onPointerDownHeader={onPointerDownHeader}
     />
@@ -105,6 +110,7 @@ interface ExpandedNodeViewProps {
   isActive: boolean;
   isStreaming: boolean;
   isRefined: boolean;
+  isWritten: boolean;
   styleBase: React.CSSProperties;
   onPointerDownHeader: (e: React.PointerEvent, nodeId: string) => void;
 }
@@ -120,6 +126,7 @@ function ExpandedNodeView({
   isActive,
   isStreaming,
   isRefined,
+  isWritten,
   styleBase,
   onPointerDownHeader,
 }: ExpandedNodeViewProps) {
@@ -141,13 +148,17 @@ function ExpandedNodeView({
 
   return (
     <div style={styleBase}>
-      {/* 提炼节点顶部饰条：3px 焦糖色横条，强化节点身份 */}
+      {/* 提炼/撰写节点顶部饰条：3px 横条强化节点身份。提炼=焦糖渐变、撰写=薄荷渐变 */}
       {isRefined && (
         <div style={{ height: 3, background: `linear-gradient(90deg, ${color.accent400}, ${color.accent500})` }} />
+      )}
+      {isWritten && (
+        <div style={{ height: 3, background: `linear-gradient(90deg, ${color.moss300}, ${color.moss500})` }} />
       )}
       <NodeHeader
         node={node}
         isRefined={isRefined}
+        isWritten={isWritten}
         isStreaming={isStreaming}
         isActive={isActive}
         onPointerDownHeader={onPointerDownHeader}
@@ -170,6 +181,7 @@ function ExpandedNodeView({
 interface NodeHeaderProps {
   node: NodeType;
   isRefined: boolean;
+  isWritten: boolean;
   isStreaming: boolean;
   isActive: boolean;
   onPointerDownHeader: (e: React.PointerEvent, nodeId: string) => void;
@@ -178,13 +190,13 @@ interface NodeHeaderProps {
   onOpenFullscreen: () => void;
 }
 
-function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeader, onRetryRefine, onFold, onOpenFullscreen }: NodeHeaderProps) {
+function NodeHeader({ node, isRefined, isWritten, isStreaming, isActive, onPointerDownHeader, onRetryRefine, onFold, onOpenFullscreen }: NodeHeaderProps) {
   const [hovered, setHovered] = useState(false);
-  const headerBg = isRefined ? color.warm : color.paper;
-  const headerBorder = isRefined ? color.accent200 : color.ink200;
-  const headerTextColor = isRefined ? color.accent700 : color.ink800;
-  const iconColor = isRefined ? color.accent600 : color.ink500;
-  const fallbackTitle = isRefined ? '提炼节点' : '新节点';
+  const headerBg = isRefined ? color.warm : isWritten ? color.mint : color.paper;
+  const headerBorder = isRefined ? color.accent200 : isWritten ? color.moss200 : color.ink200;
+  const headerTextColor = isRefined ? color.accent700 : isWritten ? color.moss700 : color.ink800;
+  const iconColor = isRefined ? color.accent600 : isWritten ? color.moss600 : color.ink500;
+  const fallbackTitle = isRefined ? '提炼节点' : isWritten ? '撰写节点' : '新节点';
 
   return (
     <div
@@ -206,7 +218,13 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
       }}
     >
       <span style={{ display: 'inline-flex', color: iconColor }}>
-        {isRefined ? <Sparkle size={16} strokeWidth={1.8} /> : <MessageSquare size={16} strokeWidth={1.6} />}
+        {isRefined ? (
+          <Sparkle size={16} strokeWidth={1.8} />
+        ) : isWritten ? (
+          <Feather size={16} strokeWidth={1.8} />
+        ) : (
+          <MessageSquare size={16} strokeWidth={1.6} />
+        )}
       </span>
       <span
         style={{
@@ -222,7 +240,7 @@ function NodeHeader({ node, isRefined, isStreaming, isActive, onPointerDownHeade
       >
         {node.title ?? fallbackTitle}
       </span>
-      {/* 仅对话节点 + hover 时显示标题刷新按钮（提炼节点的 title 由系统定值，不参与重新生成）*/}
+      {/* 对话/撰写节点 hover 时显示标题刷新按钮；提炼节点 title 由系统按内容定值，不开放用户重新生成 */}
       {!isRefined && hovered && !isStreaming && (
         <RegenerateTitleButton nodeId={node.id} />
       )}
@@ -365,6 +383,7 @@ function RegenerateTitleButton({ nodeId }: { nodeId: string }) {
 interface CollapsedCardProps {
   node: NodeType;
   isRefined: boolean;
+  isWritten: boolean;
   isStreaming: boolean;
   isActive: boolean;
   styleBase: React.CSSProperties;
@@ -372,11 +391,13 @@ interface CollapsedCardProps {
   onPointerDownHeader: (e: React.PointerEvent, nodeId: string) => void;
 }
 
-// 折叠态分发：根据 isRefined 选择具体卡片实现，避免单组件承载两套配色与文案分支。
+// 折叠态分发：按节点类型选择具体卡片实现，避免单组件承载多套配色与文案分支。
 // 独立成 CollapsedCard 而非在 CanvasNode 直接三元，是为了保留一个可以加折叠
 // 动画/过渡的扩展点，同时让 CanvasNode 主体只关心折叠/展开分支本身的跳转逻辑。
 function CollapsedCard(props: CollapsedCardProps) {
-  return props.isRefined ? <CollapsedRefinedCard {...props} /> : <CollapsedDialogueCard {...props} />;
+  if (props.isRefined) return <CollapsedRefinedCard {...props} />;
+  if (props.isWritten) return <CollapsedWrittenCard {...props} />;
+  return <CollapsedDialogueCard {...props} />;
 }
 
 // 双行布局通用样式
@@ -573,6 +594,47 @@ function CollapsedRefinedCard({ node, isStreaming, isActive, styleBase, messageC
           fontSize: text.sm,
           fontWeight: 600,
           color: color.accent700,
+          letterSpacing: '-0.01em',
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+          overflow: 'hidden',
+        }}
+      >
+        {statusDesc}
+      </div>
+    </div>
+  );
+}
+
+// 折叠态撰写节点：双行布局对照 CollapsedRefinedCard，配色用 mint/moss 系列与提炼形成冷暖对照
+function CollapsedWrittenCard({ node, isStreaming, isActive, styleBase, messageCount, onPointerDownHeader }: CollapsedCardProps) {
+  const nodeTitle = node.title ?? '撰写节点';
+  const statusDesc = messageCount > 0 ? '已撰写，点击查看' : '撰写中…';
+  return (
+    <div
+      style={{ ...styleBase, ...collapsedShellBase, width: COLLAPSED_NODE_W, height: COLLAPSED_REFINED_H }}
+      onPointerDown={(e) => onPointerDownHeader(e, node.id)}
+    >
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: text.xs, color: color.moss600 }}>
+        <Feather size={12} strokeWidth={1.8} />
+        <span
+          style={{
+            flex: 1,
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+            overflow: 'hidden',
+            fontWeight: 500,
+          }}
+        >
+          {nodeTitle}
+        </span>
+        <StatusBadge isStreaming={isStreaming} isActive={isActive} />
+      </div>
+      <div
+        style={{
+          fontSize: text.sm,
+          fontWeight: 600,
+          color: color.moss700,
           letterSpacing: '-0.01em',
           whiteSpace: 'nowrap',
           textOverflow: 'ellipsis',

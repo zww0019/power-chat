@@ -7,6 +7,8 @@ export const color = {
   raised: '#FFFFFF',
   warm: '#F5E9D2',
   warmHi: '#EFDDB8',
+  mint: '#E5F1E2',
+  mintHi: '#CFE5C7',
   soft: '#F5F2E8',
   tint: '#FAF1E4',
 
@@ -30,9 +32,11 @@ export const color = {
   accent600: '#9A6128',
   accent700: '#7A4C1E',
 
+  moss200: '#C2D6BD',
   moss300: '#8FA286',
   moss500: '#5C7556',
   moss600: '#455B40',
+  moss700: '#2F4429',
 
   success: '#5C7556',
   warning: '#C9882F',

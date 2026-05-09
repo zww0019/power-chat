@@ -10,7 +10,10 @@
 //
 // 流式拆分为两阶段：
 // Phase 1: LLM 写初稿（流式输出 content 事件）
-// Phase 2: Humanizer-rewrite 三角迭代——执行者改写 → 批评者检测 → 裁判决策（最多 3 轮）
+// Phase 2: Humanizer-rewrite 单次改写——仅执行一次执行者改写。
+//   不再做多轮迭代（曾经的"批评者评分 + 反复回灌 currentText"会让 AI 味在多轮间累积），
+//   单次改写后若文本长度大于初稿 50% 即采纳，否则回退初稿。
+//   最终全文通过 done 事件的 finalContent 字段一次性返回，前端 replace 而非 append。
 
 import type { Node, Edge, LLMMessage, Message, StreamEvent } from '../types.js';
 import { getPersistence } from './persistence.js';
@@ -157,39 +160,8 @@ const HUMANIZER_EXECUTOR_PROMPT = `你是一位擅长拟人化改写的老编辑
 - 保持原文的核心观点和信息完整性
 - 直接输出改写后的全文，不要加任何前缀、后缀、说明`;
 
-// ===== Humanizer-rewrite: 批评者检测系统提示（第2角色）=====
-const HUMANIZER_CRITIC_PROMPT = `你是一位严格的文本审查员。你的任务是对照以下"12种AI高危特征检测清单"，逐条审查面前的文章，并给出评分。
-
-## 12种AI高危特征检测清单
-
-1. 套话开头：以"在当今…时代"、"随着…的发展"、"众所周知"等万能句式开头
-2. 情感中性：全文语气平淡，没有明确的个人好恶、惊讶、困惑、兴奋等情绪波动
-3. 过度连接词：大量使用"值得注意的是"、"不可否认"、"与此同时"、"此外"、"总而言之"
-4. 线性逻辑：严格的"提出问题→分析→结论"三段式，没有思路跳跃或中途反转
-5. 泛用比喻：使用"双刃剑"、"冰山一角"、"一把钥匙"等烂大街的隐喻
-6. 段落等长：每段字数高度接近，像被格式化过
-7. 首句雷同：多个段落以相同句式开头
-8. 万能总结：以"总之"、"综上所述"、"总的来说"作为结尾段开头
-9. 缺乏具体细节：只有抽象概括，没有具体的数字、场景、人物、时间点
-10. 过度平衡：每提一个优点就紧跟一个缺点，刻意保持"客观中立"
-11. 解释性破折号：频繁使用"——也就是说"这种结构来解释概念
-12. 无个人判断：全文没有出现"我觉得"、"我猜"、"说实话"等主观立场词
-
-## 审查格式要求
-
-请逐条对照检测，输出格式如下：
-
-1. 套话开头 ✅ 或 ❌（简述理由）
-2. 情感中性 ✅ 或 ❌（简述理由）
-...
-12. 无个人判断 ✅ 或 ❌（简述理由）
-
-综合评分：X/10
-
-注意：✅=通过（不含该特征），❌=命中（含该特征）。≥8分视为通过审查。`;
-
 // 流式拉取撰写内容（一次性 token 消费后失效）
-// 两阶段：Phase 1 流式写初稿 → Phase 2 三角迭代 humanizer-rewrite
+// 两阶段：Phase 1 流式写初稿 → Phase 2 单次 humanizer-rewrite
 export async function* streamWrite(token: string): AsyncIterable<StreamEvent> {
   const task = pendingTasks.get(token);
   if (!task) {
@@ -252,42 +224,24 @@ export async function* streamWrite(token: string): AsyncIterable<StreamEvent> {
     await persistDraft(p, asstMsg, contentBuf, reasoningBuf, 'complete');
     const draftText = contentBuf;
 
-    // ===== Phase 2: Humanizer-rewrite 三角迭代 =====
+    // ===== Phase 2: Humanizer-rewrite 单次改写 =====
+    // 调一次执行者改写——上下文（messages 数组）始终是干净的两条消息，
+    // 草稿不在多轮间循环回灌，从根上避免 AI 味累积。
+    let finalContent: string | undefined;
     if (draftText.length > 50) {
-      yield { type: 'rewrite_round', round: 0, phase: 'start' };
-
-      let currentText = draftText;
-      let finalScore = 0;
-
-      for (let round = 1; round <= 3; round++) {
-        // Step 2a: 执行者改写
-        yield { type: 'rewrite_round', round, phase: 'executing' };
-        const rewritten = await humanizerExecRewrite(currentText, task.writingRequest);
-        if (!rewritten || rewritten.length < currentText.length * 0.5) {
-          // 改写失败或大幅缩水，保留当前文本，终止迭代
-          break;
-        }
-        currentText = rewritten;
-
-        // Step 2b: 批评者检测
-        yield { type: 'rewrite_round', round, phase: 'evaluating' };
-        finalScore = await humanizerCriticEvaluate(currentText);
-        yield { type: 'rewrite_round', round, phase: 'judging', score: finalScore };
-
-        // Step 2c: 裁判决策
-        if (finalScore >= 8) break;
-      }
-
-      // 最终文章覆盖 content
-      if (currentText !== draftText) {
-        contentBuf = currentText;
+      const rewritten = await humanizerExecRewrite(draftText, task.writingRequest);
+      // 长度安全网：改写后大幅缩水（<50%）视作 LLM 异常截断，回退初稿
+      if (rewritten && rewritten.length >= draftText.length * 0.5 && rewritten !== draftText) {
+        contentBuf = rewritten;
         await persistDraft(p, asstMsg, contentBuf, reasoningBuf, 'complete');
-        yield { type: 'content', delta: currentText };
+        finalContent = rewritten;
       }
     }
 
-    // 全部完成
-    yield { type: 'done', messageId: asstMsg.id };
+    // 全部完成——若执行了去AI味，把最终全文通过 done.finalContent 一次性给前端 replace
+    yield finalContent
+      ? { type: 'done', messageId: asstMsg.id, finalContent }
+      : { type: 'done', messageId: asstMsg.id };
   } finally {
     canvas.unmarkStreaming(task.writtenNodeId);
   }
@@ -336,29 +290,3 @@ async function humanizerExecRewrite(
   return content || null;
 }
 
-// Humanizer-rewrite: 批评者检测，返回 0-10 评分
-async function humanizerCriticEvaluate(text: string): Promise<number> {
-  const settings = await getSettings();
-  let content = '';
-  for await (const evt of streamChat({
-    messages: [
-      { role: 'system', content: HUMANIZER_CRITIC_PROMPT },
-      { role: 'user', content: `请审查以下文章，逐条对照12种AI高危特征检测清单，给出评分。\n\n文章：\n\n${text}` },
-    ],
-    enableReasoning: false,
-    temperature: 0.3,
-    provider: settings.provider,
-  })) {
-    if (evt.type === 'content') content += evt.delta;
-    if (evt.type === 'done') break;
-    if (evt.type === 'error') return 8; // 兜底通过
-  }
-  // 提取分数
-  const scoreMatch = content.match(/综合评分[：:]\\s*(\\d+)/);
-  if (scoreMatch) {
-    const s = parseInt(scoreMatch[1]!, 10);
-    return Math.min(10, Math.max(0, s));
-  }
-  const fallback = content.match(/\b([0-9]|10)\b/);
-  return fallback ? parseInt(fallback[1]!, 10) : 8;
-}

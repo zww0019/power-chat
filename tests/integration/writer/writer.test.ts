@@ -131,7 +131,7 @@ describe('writer: 创建撰写任务', () => {
     expect(events.some((e) => e.type === 'done')).toBe(true);
   });
 
-  it('流式输出包含两阶段：先 content 初稿，后 rewrite_round 迭代事件', async () => {
+  it('流式输出：Phase 1 流式 content 初稿，Phase 2 不再产生迭代事件，done 收尾', async () => {
     const a = await createNodeWithContent('供应链问题');
     const result = await api<any>('/api/write', {
       method: 'POST',
@@ -141,15 +141,19 @@ describe('writer: 创建撰写任务', () => {
     const events = await consumeSSE(result.streamUrl);
     const types = events.map((e) => e.type);
 
-    // Phase 1: 应有 content 事件
+    // Phase 1：content 事件流式产出初稿
     expect(types).toContain('content');
 
-    // Phase 2: 应有 rewrite_round 事件（至少 start）
-    const rewriteEvents = events.filter((e) => e.type === 'rewrite_round');
-    expect(rewriteEvents.length).toBeGreaterThanOrEqual(1);
-    expect(rewriteEvents[0]).toMatchObject({ round: 0, phase: 'start' });
+    // 旧的多轮迭代事件 rewrite_round 已从契约删除，任何撰写流都不应再出现
+    expect(events.find((e) => e.type === 'rewrite_round')).toBeUndefined();
 
-    // 最后是 done
-    expect(types[types.length - 1]).toBe('done');
+    // 最后是 done；finalContent 为可选字段（mock 改写命中长度安全网时不携带，
+    // 仅当 humanizer 实际产出有效改写时才会设置——契约不强制存在）
+    const last = events[events.length - 1] as any;
+    expect(last.type).toBe('done');
+    if (last.finalContent !== undefined) {
+      expect(typeof last.finalContent).toBe('string');
+      expect((last.finalContent as string).length).toBeGreaterThan(0);
+    }
   });
 });

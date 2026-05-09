@@ -27,6 +27,11 @@ export function applyStreamEvent(evt: StreamEvent, asstMsgId: string): void {
     case 'reasoning_details': store.appendMessageReasoningDetails(asstMsgId, evt.delta); break;
     case 'content': store.appendMessageContent(asstMsgId, evt.delta); break;
     case 'done':
+      // writer Phase 2 完成时后端会通过 finalContent 携带完整最终全文——必须在 replaceMessageId
+      // 之前用乐观 ID replace（此时 store 仍以 asstMsgId 为 key），把 message.content 整体替换
+      // 为去AI味后的版本，避免落到"初稿全文 + 最终版全文"的双倍 content。
+      // 对话/提炼节点 done 不带 finalContent，走原 finalize 路径。
+      if (evt.finalContent !== undefined) store.replaceMessageContent(asstMsgId, evt.finalContent);
       // 先把乐观 ID 替换为后端真实 ID，再 finalize——否则用户立即对该消息发起 branch
       // 时，前端传给后端的 ID 是乐观 ID，后端查不到 → 400 not_found。
       store.replaceMessageId(asstMsgId, evt.messageId);

@@ -58,6 +58,10 @@ interface CanvasActions {
   // 删除指定节点中 sequence ≥ fromSequence 的所有消息（用户编辑触发的本地同步）
   removeMessagesFromSequence: (nodeId: string, fromSequence: number) => void;
   appendMessageContent: (msgId: string, contentDelta: string, reasoningDelta?: string) => void;
+  // 直接替换消息 content 为给定全文。仅 writer Phase 2 完成时使用——
+  // append 语义对流式渲染必要，但去AI味后端会推一份完整最终全文，需要 replace 而非拼接，
+  // 否则会出现"初稿全文 + 最终版全文"的双倍内容。
+  replaceMessageContent: (msgId: string, content: string) => void;
   // 把 OpenRouter / OpenAI 推理模型的 reasoning_details 数组片段累加到消息上，供持久化与多轮回灌使用。
   // UI 渲染走 reasoningContent 字符串，本字段不影响显示。
   appendMessageReasoningDetails: (msgId: string, detailsDelta: ReasoningDetail[]) => void;
@@ -240,6 +244,15 @@ export const useCanvasStore = create<Store>()(
                   : existing.reasoningContent,
               },
             },
+          };
+        }),
+
+      replaceMessageContent: (msgId, content) =>
+        set((s) => {
+          const existing = s.messages[msgId];
+          if (!existing) return s;
+          return {
+            messages: { ...s.messages, [msgId]: { ...existing, content } },
           };
         }),
 

@@ -110,7 +110,9 @@ export type StreamEvent =
   // 此事件让前端把 store 中的占位 ID 替换为后端真实 ID，保证后续 branch / edit 等按
   // ID 查后端的操作能命中持久化记录。必须在第一帧 reasoning / content 之前 yield。
   | { type: 'user_persisted'; messageId: string }
-  | { type: 'done'; messageId: string }
+  // finalContent：仅 writer Phase 2 完成时携带最终去AI味后的全文，前端 done handler 用它**替换**
+  // message.content（不再 append）。对话/提炼节点不会带此字段，走原 finalize 路径
+  | { type: 'done'; messageId: string; finalContent?: string }
   | { type: 'error'; error: string }
   // 自动标题生成成功（双轨制中的"自动"轨）：每 3 轮（6 条 message）触发一次。
   // 必须在 done 之前 yield（IPC 监听器收到 done 即 unsubscribe，trailing 事件会丢失，详见 E016）
@@ -145,11 +147,7 @@ export type StreamEvent =
       truncated?: boolean;
     }
   // agent loop 终结：reason 区分正常完成 vs 各种触限/中断；之后会接 content 流（Final Response）
-  | { type: 'agent_final'; reason: AgentFinalReason }
-  // writer Phase 2 humanizer-rewrite 三角迭代进度（writer.ts §Phase 2）：
-  // start → 进入 rewrite 阶段；executing → 执行者改写中；evaluating → 批评者评分中；
-  // judging → 裁判读到本轮分数；score 仅 judging 阶段携带
-  | { type: 'rewrite_round'; round: number; phase: 'start' | 'executing' | 'evaluating' | 'judging'; score?: number };
+  | { type: 'agent_final'; reason: AgentFinalReason };
 
 // agent loop 的终止原因
 export type AgentFinalReason =

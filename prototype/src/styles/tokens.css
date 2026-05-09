@@ -16,6 +16,8 @@
   --surface-raised:   #FFFFFF;   /* 弹窗 / Modal */
   --surface-warm:     #F5E9D2;   /* 提炼节点 */
   --surface-warm-hi:  #EFDDB8;   /* 提炼 header / 强调饰条 */
+  --surface-mint:     #E5F1E2;   /* 撰写节点（与提炼的暖焦糖形成冷暖对照） */
+  --surface-mint-hi:  #CFE5C7;   /* 撰写 header / 强调饰条 */
   --surface-soft:     #F5F2E8;   /* 助手气泡背景 */
   --surface-tint:     #FAF1E4;   /* 用户气泡背景（accent-50） */
 
@@ -41,10 +43,12 @@
   --accent-600: #9A6128;
   --accent-700: #7A4C1E;
 
-  /* ============== 副强调：墨绿（成功 / 分支辅助标记）============== */
+  /* ============== 副强调：墨绿（成功 / 分支辅助标记 / 撰写节点身份色）============== */
+  --moss-200: #C2D6BD;   /* 撰写节点 border 浅色 / header 分割线 */
   --moss-300: #8FA286;
   --moss-500: #5C7556;
   --moss-600: #455B40;
+  --moss-700: #2F4429;   /* 撰写节点深色文字 */
 
   /* ============== 语义色 ============== */
   --semantic-success: #5C7556;
