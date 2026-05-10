@@ -21,6 +21,7 @@ import * as writer from '../../src/modules/writer.js';
 import * as settings from '../../src/modules/settings.js';
 import * as cognition from '../../src/modules/cognition-client.js';
 import * as abortRegistry from '../../src/modules/abort-registry.js';
+import * as project from '../../src/modules/project.js';
 import { getPersistence } from '../../src/modules/persistence.js';
 import type { StreamEvent } from '../../src/types.js';
 
@@ -30,23 +31,89 @@ app.use(express.json({ limit: '5mb' }));
 
 const PORT = Number(process.env.PORT ?? 3001);
 
-// === canvas ===
-app.get('/api/canvas', async (_req, res) => {
+// === project ===
+// 多项目管理：列表、创建、改名、删除。删除会级联清理 canvas + nodes + edges + messages。
+app.get('/api/projects', async (_req, res) => {
   try {
-    const snapshot = await canvas.getCanvasSnapshot();
+    res.json(await project.listProjects());
+  } catch (e: any) {
+    res.status(500).json({ error: 'internal', message: e.message });
+  }
+});
+
+app.post('/api/projects', async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name : '';
+  if (!name.trim()) {
+    res.status(400).json({ error: 'bad_request', message: 'name required' });
+    return;
+  }
+  await respondCreated(res, () => project.createProject({ name }), 'internal', 500);
+});
+
+app.patch('/api/projects/:id', async (req, res) => {
+  try {
+    const updated = await project.updateProject(req.params.id, req.body ?? {});
+    if (!updated) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json(updated);
+  } catch (e: any) {
+    res.status(400).json({ error: 'bad_request', message: e.message });
+  }
+});
+
+app.post('/api/projects/:id/touch', async (req, res) => {
+  try {
+    await project.touchProject(req.params.id);
+    res.status(204).end();
+  } catch (e: any) {
+    res.status(500).json({ error: 'internal', message: e.message });
+  }
+});
+
+app.delete('/api/projects/:id', (req, res) =>
+  respondDelete(res, () => project.deleteProject(req.params.id)),
+);
+
+// === canvas ===
+// projectId 必填（query 参数）：通过 project.canvasId 反查真实 canvas，
+// 再走 getCanvasSnapshot(canvasId) 拿严格按 canvasId 过滤的快照
+app.get('/api/canvas', async (req, res) => {
+  try {
+    const projectId = (req.query.projectId as string | undefined) ?? '';
+    if (!projectId) {
+      res.status(400).json({ error: 'bad_request', message: 'projectId required' });
+      return;
+    }
+    const proj = await project.getProject(projectId);
+    if (!proj) {
+      res.status(404).json({ error: 'not_found', message: `project not found: ${projectId}` });
+      return;
+    }
+    const snapshot = await canvas.getCanvasSnapshot(proj.canvasId);
+    if (!snapshot) {
+      res.status(404).json({ error: 'not_found', message: 'canvas not found' });
+      return;
+    }
     res.json(snapshot);
   } catch (e: any) {
     res.status(500).json({ error: 'internal', message: e.message });
   }
 });
 
+// 创建节点：必须显式声明 canvasId 所属画布，由前端从已加载的 canvas snapshot 取值传入
 app.post('/api/nodes', async (req, res) => {
-  const { positionX, positionY, type } = req.body;
+  const { canvasId, positionX, positionY, type } = req.body ?? {};
+  if (typeof canvasId !== 'string' || !canvasId) {
+    res.status(400).json({ error: 'bad_request', message: 'canvasId required' });
+    return;
+  }
   if (typeof positionX !== 'number' || typeof positionY !== 'number') {
     res.status(400).json({ error: 'bad_request', message: 'positionX, positionY required' });
     return;
   }
-  await respondCreated(res, () => canvas.createNode({ positionX, positionY, type }), 'internal', 500);
+  await respondCreated(res, () => canvas.createNode({ canvasId, positionX, positionY, type }), 'internal', 500);
 });
 
 app.patch('/api/nodes/:id', async (req, res) => {

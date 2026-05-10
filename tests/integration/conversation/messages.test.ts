@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, BASE_URL, createNode, sendMessage } from '../helpers';
+import { api, BASE_URL, createNode, sendMessage , getCanvas } from '../helpers';
 
 // conversation-module 测试 - messages（节点内对话）
 //
@@ -23,7 +23,7 @@ describe('conversation: 节点内消息发送', () => {
     const node = await createNode();
     await sendMessage(node.id, '阻力');
     await sendMessage(node.id, '反例');
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const messages = snap.messages
       .filter((m: any) => m.nodeId === node.id)
       .sort((a: any, b: any) => a.sequence - b.sequence);
@@ -35,7 +35,7 @@ describe('conversation: 节点内消息发送', () => {
   it('user 消息的 reasoningContent 始终为 null（INV-11 数据层）', async () => {
     const node = await createNode();
     await sendMessage(node.id, '阻力');
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const userMsg = snap.messages.find((m: any) => m.role === 'user' && m.nodeId === node.id);
     expect(userMsg.reasoningContent).toBeNull();
   });
@@ -79,7 +79,7 @@ describe('conversation: 节点内消息发送', () => {
     const userPersisted = events.find((e) => e.type === 'user_persisted') as { messageId: string } | undefined;
     expect(userPersisted).toBeDefined();
     expect(typeof userPersisted!.messageId).toBe('string');
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const userMsg = snap.messages.find((m: any) => m.role === 'user' && m.nodeId === node.id);
     expect(userMsg.id).toBe(userPersisted!.messageId);
   });
@@ -123,7 +123,7 @@ describe('conversation: 标题双轨制（D006 / R012）', () => {
     expect((titleEvent!.title as string).length).toBeGreaterThan(0);
 
     // 持久化验证
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const updated = snap.nodes.find((x: any) => x.id === node.id);
     expect(updated.title).toBeTruthy();
     expect(updated.title.length).toBeLessThanOrEqual(30);
@@ -140,7 +140,7 @@ describe('conversation: 标题双轨制（D006 / R012）', () => {
     expect(result.title.length).toBeGreaterThan(0);
     expect(result.title.length).toBeLessThanOrEqual(30);
 
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const updated = snap.nodes.find((x: any) => x.id === node.id);
     expect(updated.title).toBe(result.title);
   });

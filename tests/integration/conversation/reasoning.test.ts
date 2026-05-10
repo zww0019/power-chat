@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, BASE_URL, createNode, sendMessage } from '../helpers';
+import { api, BASE_URL, createNode, sendMessage , getCanvas } from '../helpers';
 
 // OpenRouter 思考兼容改造的端到端验证：
 // 1. provider=openrouter + thinkingModeEnabled=true 时，SSE 流既含 reasoning 也含 reasoning_details
@@ -48,7 +48,7 @@ describe('reasoning · OpenRouter 思考路径', () => {
     const node = await createNode();
     await sendMessage(node.id, '中国新茶饮品牌出海有哪些主要阻力？');
 
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const assistantMsg = snap.messages.find(
       (m: any) => m.role === 'assistant' && m.nodeId === node.id,
     );

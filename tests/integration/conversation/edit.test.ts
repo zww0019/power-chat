@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, BASE_URL, createNode, sendMessage } from '../helpers';
+import { api, BASE_URL, createNode, sendMessage , getCanvas } from '../helpers';
 
 // conversation-module 测试 - truncateMessages（用户编辑触发）
 // 覆盖：正常截断 / 流式守卫 / 分支引用守卫 / 边界值
@@ -16,7 +16,7 @@ async function truncate(nodeId: string, fromSequence: number, expectStatus = 200
 }
 
 async function getCanvasMessages(nodeId: string): Promise<Array<{ sequence: number; role: string; content: string }>> {
-  const snap = await api<any>('/api/canvas');
+  const snap = await getCanvas();
   return snap.messages
     .filter((m: any) => m.nodeId === nodeId)
     .sort((a: any, b: any) => a.sequence - b.sequence);
@@ -65,7 +65,7 @@ describe('conversation: truncateMessages（用户编辑）', () => {
     await sendMessage(parent.id, 'q1'); // 0,1
     await sendMessage(parent.id, 'q2'); // 2,3
     const parentMessages = await getCanvasMessages(parent.id);
-    const assistant1Id = (await api<any>('/api/canvas')).messages.find((m: any) => m.nodeId === parent.id && m.sequence === 1).id;
+    const assistant1Id = (await getCanvas()).messages.find((m: any) => m.nodeId === parent.id && m.sequence === 1).id;
 
     // 从 sequence=1 创建分支 → edge.inheritedUntilSequence = 1
     await api<any>('/api/nodes/branch', {

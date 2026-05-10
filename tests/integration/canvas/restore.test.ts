@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, BASE_URL, createNode, createBranchedPair } from '../helpers';
+import { api, BASE_URL, createNode, createBranchedPair , getCanvas } from '../helpers';
 
 // canvas-module: POST /api/nodes/restore（撤销删除节点的服务端落点）
 // 关联文档：
@@ -17,7 +17,7 @@ describe('canvas: POST /api/nodes/restore', () => {
     await api(`/api/nodes/${node.id}`, { method: 'DELETE', expectStatus: 204 });
 
     // 确认已删
-    const before = await api<any>('/api/canvas');
+    const before = await getCanvas();
     expect(before.nodes.find((n: any) => n.id === node.id)).toBeUndefined();
 
     // 用原 snapshot 恢复
@@ -27,7 +27,7 @@ describe('canvas: POST /api/nodes/restore', () => {
       expectStatus: 204,
     });
 
-    const after = await api<any>('/api/canvas');
+    const after = await getCanvas();
     const restored = after.nodes.find((n: any) => n.id === node.id);
     expect(restored).toBeDefined();
     expect(restored.positionX).toBe(100);
@@ -52,7 +52,7 @@ describe('canvas: POST /api/nodes/restore', () => {
     const { parent, child, edge } = await createBranchedPair();
 
     // 抓取删除前的完整快照（snapshot of parent）
-    const before = await api<any>('/api/canvas');
+    const before = await getCanvas();
     const parentNode = before.nodes.find((n: any) => n.id === parent.id);
     const parentMsgs = before.messages.filter((m: any) => m.nodeId === parent.id);
     const parentEdges = before.edges.filter(
@@ -74,7 +74,7 @@ describe('canvas: POST /api/nodes/restore', () => {
       expectStatus: 204,
     });
 
-    const after = await api<any>('/api/canvas');
+    const after = await getCanvas();
     expect(after.nodes.find((n: any) => n.id === parent.id)).toBeDefined();
     expect(after.messages.filter((m: any) => m.nodeId === parent.id).length).toBe(parentMsgs.length);
     const restoredEdge = after.edges.find((e: any) => e.id === edge.id);
@@ -100,7 +100,7 @@ describe('canvas: POST /api/nodes/restore', () => {
     const branchChild = branch.node;
 
     // 抓 a 的快照（含触及 a 的边）
-    const before = await api<any>('/api/canvas');
+    const before = await getCanvas();
     const aSnapshot = {
       node: before.nodes.find((n: any) => n.id === a.id),
       messages: before.messages.filter((m: any) => m.nodeId === a.id),
@@ -119,7 +119,7 @@ describe('canvas: POST /api/nodes/restore', () => {
       expectStatus: 204,
     });
 
-    const after = await api<any>('/api/canvas');
+    const after = await getCanvas();
     // 节点 a 恢复 + 悬空边照常入库（按用户决策"保留边数据"）
     expect(after.nodes.find((n: any) => n.id === a.id)).toBeDefined();
     expect(after.edges.find((e: any) => e.id === branchEdge.id)).toBeDefined();

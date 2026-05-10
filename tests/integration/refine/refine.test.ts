@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, consumeSSE, BASE_URL } from '../helpers';
+import { api, consumeSSE, BASE_URL, getCanvas, createNode } from '../helpers';
 
 // refine-module 集成测试
 // INV-2, INV-4 + 旅程1 阶段 C-D 步骤 15-23
@@ -9,11 +9,7 @@ beforeEach(async () => {
 });
 
 async function createNodeWithContent(content: string): Promise<string> {
-  const n = await api<any>('/api/nodes', {
-    method: 'POST',
-    body: JSON.stringify({ positionX: 0, positionY: 0 }),
-    expectStatus: 201,
-  });
+  const n = await createNode();
   await consumeSSE(`/api/nodes/${n.id}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -124,7 +120,7 @@ describe('refine: INV-4 提炼边的合法性', () => {
       body: JSON.stringify({ sourceNodeIds: [a, b], intentQuestion: null }),
       expectStatus: 201,
     });
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const refinedIds = new Set(
       snap.nodes.filter((n: any) => n.type === 'refined').map((n: any) => n.id),
     );

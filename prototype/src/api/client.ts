@@ -9,6 +9,7 @@ import type {
   Node,
   Edge,
   Message,
+  Project,
   Settings,
   CreateNodeRequest,
   BranchRequest,
@@ -81,8 +82,31 @@ async function request<T>(path: string, init?: { method?: string; body?: unknown
 }
 
 export const api = {
-  async getCanvas(): Promise<{ canvas: Canvas; nodes: Node[]; edges: Edge[]; messages: Message[] }> {
-    return request('/canvas');
+  // === 项目管理 ===
+  async listProjects(): Promise<Project[]> {
+    return request('/projects');
+  },
+
+  async createProject(name: string): Promise<Project> {
+    return request('/projects', { method: 'POST', body: JSON.stringify({ name }) });
+  },
+
+  async updateProject(id: string, patch: Partial<Pick<Project, 'name' | 'lastOpenedAt'>>): Promise<Project> {
+    return request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+  },
+
+  async touchProject(id: string): Promise<void> {
+    return request<void>(`/projects/${id}/touch`, { method: 'POST' });
+  },
+
+  async deleteProject(id: string): Promise<void> {
+    return request<void>(`/projects/${id}`, { method: 'DELETE' });
+  },
+
+  // === 画布快照 ===
+  // projectId 必填：经后端 project.canvasId 反查真实 canvas，再返回严格按 canvasId 过滤的快照
+  async getCanvas(projectId: string): Promise<{ canvas: Canvas; nodes: Node[]; edges: Edge[]; messages: Message[] }> {
+    return request(`/canvas?projectId=${encodeURIComponent(projectId)}`);
   },
 
   async createNode(req: CreateNodeRequest): Promise<Node> {

@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { Canvas, Node, Edge, Message, ReasoningDetail, StreamingState } from '../types';
 
 // Undo 栈条目（仅 node.move / node.delete，新建节点不入栈——R005-undo）
@@ -15,22 +14,22 @@ interface CanvasState {
   nodes: Record<string, Node>;
   edges: Record<string, Edge>;
   messages: Record<string, Message>;
-  // 运行时派生状态（不持久化的部分会被 partialize 排除）
+  // 运行时派生状态
   activeNodeId: string | null;
   selectedNodeIds: string[]; // 多选用于提炼
   selectedEdgeId: string | null; // 选中的边（用于删除/高亮）
   // 当前全屏（大屏 Modal）展示的节点 ID。同时只能有一个，与覆盖层 Modal 语义一致。
-  // 不持久化：刷新后视为关闭，避免恢复到一个用户已经离开的全屏态。
   fullscreenNodeId: string | null;
   streamingByNode: Record<string, StreamingState>;
-  // M5 / 决策 29：agent 启动率/中断率指标内存计数；DevTools 可见，不持久化、不上报
+  // M5 / 决策 29：agent 启动率/中断率指标内存计数；DevTools 可见，不上报
   agentStats: AgentStats;
   hydrated: boolean;
   // 用户是否在本端手动操作过视口（拖动/缩放/minimap 跳转）。
-  // 启动时若为 false，App 会执行 fit-to-nodes 自动居中；为 true 则尊重 localStorage 已保存的视口。
-  // 持久化在 localStorage 中，使"已用过的客户端"重启后保留上次视口；首次启动 / 清缓存 → 走自动居中。
+  // 启动时若为 false，CanvasPage 会执行 fit-to-nodes 自动居中；为 true 则尊重已加载的视口快照。
+  // 多项目场景下视口快照按项目 id 持久化在 viewportStorage（不在本 store 内 persist）；
+  // 此字段仅是当前项目的内存运行态，由 CanvasPage 在打开项目时从 viewportStorage 写入
   userHasMovedViewport: boolean;
-  // 撤销栈（仅内存，深度 50，FIFO 淘汰）
+  // 撤销栈（仅内存，深度 50，FIFO 淘汰）。切项目时由 reset() 清空，避免跨项目残留
   undoStack: UndoEntry[];
 }
 
@@ -43,7 +42,13 @@ interface AgentStats {
 }
 
 interface CanvasActions {
+  // 重置画布全部状态：CanvasPage 卸载或切换项目时调用，避免上一项目的节点/边/消息/撤销栈
+  // 残留到下一项目造成串扰
+  reset: () => void;
   hydrate: (data: { canvas: Canvas; nodes: Node[]; edges: Edge[]; messages: Message[] }) => void;
+  // 设置当前项目的视口"用户已操作过"标志位，由 CanvasPage 在打开项目时
+  // 从 viewportStorage 加载快照后同步写入，确保 fit-to-nodes 逻辑能读到正确初始值
+  setUserHasMovedViewport: (moved: boolean) => void;
   upsertNode: (node: Node) => void;
   updateNode: (id: string, patch: Partial<Node>) => void;
   removeNode: (id: string) => void;
@@ -92,25 +97,34 @@ interface CanvasActions {
 
 type Store = CanvasState & CanvasActions;
 
+// 初始空白态——切换项目时通过 reset() 回到此状态，避免上一项目数据串扰
+const INITIAL_STATE: CanvasState = {
+  canvas: null,
+  nodes: {},
+  edges: {},
+  messages: {},
+  activeNodeId: null,
+  selectedNodeIds: [],
+  selectedEdgeId: null,
+  fullscreenNodeId: null,
+  streamingByNode: {},
+  agentStats: { started: 0, completed: 0, aborted: 0, byReason: {} },
+  hydrated: false,
+  userHasMovedViewport: false,
+  undoStack: [],
+};
+
 export const useCanvasStore = create<Store>()(
-  persist(
-    (set, get) => ({
-      canvas: null,
-      nodes: {},
-      edges: {},
-      messages: {},
-      activeNodeId: null,
-      selectedNodeIds: [],
-      selectedEdgeId: null,
-      fullscreenNodeId: null,
-      streamingByNode: {},
-      agentStats: { started: 0, completed: 0, aborted: 0, byReason: {} },
-      hydrated: false,
-      userHasMovedViewport: false,
-      undoStack: [],
+  (set) => ({
+      ...INITIAL_STATE,
+
+      reset: () => set(() => ({ ...INITIAL_STATE })),
+
+      setUserHasMovedViewport: (moved) => set(() => ({ userHasMovedViewport: moved })),
 
       // 启动时合并后端快照：节点/边/消息以后端为准；canvas viewport 在 userHasMovedViewport=true 时
-      // 保留 store 现有值（来自 localStorage），否则用后端值——首次启动后再交给 App 的 fit-to-nodes 钩子覆盖。
+      // 保留 store 现有值（由 CanvasPage 在挂载时从 viewportStorage 预先写入），否则用后端值——
+      // 首次启动后再交给 CanvasPage 的 fit-to-nodes 钩子覆盖。
       // 这样修复了"后端固定 0/0/1 永远覆盖前端拖到的位置"的双存储竞争。
       hydrate: (data) => {
         const nodes = Object.fromEntries(data.nodes.map((n) => [n.id, n]));
@@ -388,36 +402,6 @@ export const useCanvasStore = create<Store>()(
       popUndoEntry: () =>
         set((s) => ({ undoStack: s.undoStack.slice(0, -1) })),
     }),
-    {
-      name: 'power-chat-canvas',
-      // version 1：在 0→1 升级时，对没有 userHasMovedViewport 字段的旧 localStorage 数据做迁移——
-      // 若 canvas viewport 不是初始 0/0/1，说明该用户曾拖动过视口（旧版本无标志位但实际动过），
-      // 推断为已操作；否则保持 false。避免老用户升级后首次启动被 fit-to-nodes 误覆盖到旧视口。
-      version: 1,
-      migrate: (persisted: any, version: number) => {
-        if (version === 0 && persisted && persisted.userHasMovedViewport === undefined) {
-          const c = persisted.canvas;
-          // 旧版本没有 userHasMovedViewport 字段。推断逻辑：
-          // 后端 canvas 初始化时 viewport 固定为 (0, 0, 1)；若 localStorage 里的值偏离了初始值，
-          // 说明该用户曾经拖动/缩放过（旧版本把视口写到 canvas 里），应视为"已动过"。
-          // 用 `!== 0/0/1` 作为启发式推断，宁可误判为"动过"（保留旧视口）也不覆盖老用户的视口位置。
-          const movedByDefault = c
-            ? c.viewportX !== 0 || c.viewportY !== 0 || c.viewportZoom !== 1
-            : false;
-          return { ...persisted, userHasMovedViewport: movedByDefault };
-        }
-        return persisted;
-      },
-      // 只持久化数据层 + 视口"用过"标志位；不持久化运行时状态（active/selected/streaming/hydrated）
-      partialize: (s) => ({
-        canvas: s.canvas,
-        nodes: s.nodes,
-        edges: s.edges,
-        messages: s.messages,
-        userHasMovedViewport: s.userHasMovedViewport,
-      }),
-    },
-  ),
 );
 
 /** 选择器：取节点的所有消息，按 sequence 升序排列 */

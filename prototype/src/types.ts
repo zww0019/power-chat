@@ -13,6 +13,7 @@ export type {
   Node,
   Edge,
   Message,
+  Project,
   Settings,
   SettingsProvider,
   ThinkingEffort,
@@ -35,6 +36,8 @@ export type StreamingState = 'idle' | 'streaming' | 'error' | 'interrupted';
 import type { NodeType } from '../../src/types';
 
 export interface CreateNodeRequest {
+  // 必填：节点所属画布 id（多项目隔离，由调用方从当前 canvas snapshot 取值传入）
+  canvasId: string;
   positionX: number;
   positionY: number;
   type?: NodeType;

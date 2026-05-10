@@ -390,7 +390,9 @@ export async function branchNode(params: {
     positionX = parent.positionX + 440;
     positionY = parent.positionY + siblingBranchCount * BRANCH_Y_OFFSET;
   }
+  // 子分支节点与父节点共享同一画布，避免边跨画布造成快照过滤时连线丢失
   const childNode = await canvas.createNode({
+    canvasId: parent.canvasId,
     positionX,
     positionY,
     type: 'dialogue',

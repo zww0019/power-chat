@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, consumeSSE, BASE_URL } from '../helpers';
+import { api, consumeSSE, BASE_URL, getCanvas, createNode } from '../helpers';
 
 // conversation-module 测试 - branch
 // INV-1, INV-3 + 旅程1 步骤 7-13
@@ -9,11 +9,7 @@ beforeEach(async () => {
 });
 
 async function setupParentWithMessage(): Promise<{ parent: any; assistantMsgId: string }> {
-  const parent = await api<any>('/api/nodes', {
-    method: 'POST',
-    body: JSON.stringify({ positionX: 0, positionY: 0 }),
-    expectStatus: 201,
-  });
+  const parent = await createNode();
   const events = await consumeSSE(`/api/nodes/${parent.id}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -85,7 +81,7 @@ describe('conversation: 分支动作', () => {
       assistantMsgId = done.messageId;
     }
     // 验证拓扑：6 层分支链
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     expect(snap.nodes.length).toBe(7); // 1 父 + 6 分支
   });
 

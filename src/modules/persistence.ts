@@ -1,5 +1,5 @@
 // persistence-module
-// 提供基于 JSON 文件的本地存储。MVP 单用户单画布，数据量小，文件读写够用。
+// 提供基于 JSON 文件的本地存储。单用户、本地数据量小，文件读写够用。
 // Stage 7+ 可平移到 SQLite（变更只在本文件，对外接口不变）。
 
 import { promises as fs } from 'fs';
@@ -7,6 +7,7 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 interface Database {
+  projects: Record<string, any>;
   canvases: Record<string, any>;
   nodes: Record<string, any>;
   edges: Record<string, any>;
@@ -15,6 +16,7 @@ interface Database {
 }
 
 const DEFAULT_DB: Database = {
+  projects: {},
   canvases: {},
   nodes: {},
   edges: {},

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, BASE_URL, createBranchedPair } from '../helpers';
+import { api, BASE_URL, createBranchedPair, createNode, getCanvas } from '../helpers';
 
 // canvas-module 集成测试
 // Stage 6: 多数测试已可验证（mock-server 调真实模块）
@@ -16,7 +16,7 @@ beforeEach(async () => {
 
 describe('canvas: 首屏快照', () => {
   it('首次启动返回空画布、单一 canvas 行（INV-12）', async () => {
-    const data = await api<any>('/api/canvas');
+    const data = await getCanvas();
     expect(data.canvas).toBeDefined();
     expect(data.canvas.id).toBeTruthy();
     expect(typeof data.canvas.viewportZoom).toBe('number');
@@ -26,17 +26,9 @@ describe('canvas: 首屏快照', () => {
   });
 
   it('插入节点后再 GET 返回完整快照', async () => {
-    const n1 = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
-      expectStatus: 201,
-    });
-    const n2 = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 400, positionY: 0 }),
-      expectStatus: 201,
-    });
-    const data = await api<any>('/api/canvas');
+    const n1 = await createNode({ positionX: 0, positionY: 0 });
+    const n2 = await createNode({ positionX: 400, positionY: 0 });
+    const data = await getCanvas();
     expect(data.nodes).toHaveLength(2);
     expect(data.nodes.map((n: any) => n.id).sort()).toEqual([n1.id, n2.id].sort());
   });
@@ -44,11 +36,7 @@ describe('canvas: 首屏快照', () => {
 
 describe('canvas: 节点 CRUD', () => {
   it('用户双击空白处创建对话节点（旅程1 步骤1）', async () => {
-    const node = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 100, positionY: -200, type: 'dialogue' }),
-      expectStatus: 201,
-    });
+    const node = await createNode({ positionX: 100, positionY: -200, type: 'dialogue' });
     expect(node.type).toBe('dialogue');
     expect(node.positionX).toBe(100);
     expect(node.positionY).toBe(-200);
@@ -58,28 +46,20 @@ describe('canvas: 节点 CRUD', () => {
   });
 
   it('PATCH 节点位置后再 GET 返回新位置（旅程3 步骤1）', async () => {
-    const n = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
-      expectStatus: 201,
-    });
+    const n = await createNode();
     const patched = await api<any>(`/api/nodes/${n.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ positionX: 1500, positionY: 1100 }),
     });
     expect(patched.positionX).toBe(1500);
     expect(patched.positionY).toBe(1100);
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     const reloaded = snap.nodes.find((x: any) => x.id === n.id);
     expect(reloaded.positionX).toBe(1500);
   });
 
   it('PATCH 节点 collapsed=true 进入折叠态（PRD-FIX-1：用户主动）', async () => {
-    const n = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
-      expectStatus: 201,
-    });
+    const n = await createNode();
     const patched = await api<any>(`/api/nodes/${n.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ collapsed: true }),
@@ -88,11 +68,7 @@ describe('canvas: 节点 CRUD', () => {
   });
 
   it('PATCH title 字段限长 30 字符', async () => {
-    const n = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
-      expectStatus: 201,
-    });
+    const n = await createNode();
     await api(`/api/nodes/${n.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ title: 'x'.repeat(31) }),
@@ -101,14 +77,10 @@ describe('canvas: 节点 CRUD', () => {
   });
 
   it('删除节点返回 204，再 GET 不再出现', async () => {
-    const n = await api<any>('/api/nodes', {
-      method: 'POST',
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
-      expectStatus: 201,
-    });
+    const n = await createNode();
     const res = await fetch(`${BASE_URL}/api/nodes/${n.id}`, { method: 'DELETE' });
     expect(res.status).toBe(204);
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     expect(snap.nodes.find((x: any) => x.id === n.id)).toBeUndefined();
   });
 
@@ -118,7 +90,7 @@ describe('canvas: 节点 CRUD', () => {
     const res = await fetch(`${BASE_URL}/api/nodes/${A.id}`, { method: 'DELETE' });
     expect(res.status).toBe(204);
 
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     expect(snap.nodes.find((x: any) => x.id === A.id)).toBeUndefined();
     expect(snap.nodes.find((x: any) => x.id === B.id)).toBeDefined(); // 子节点保留
     // 但 A→B 的边断开
@@ -137,7 +109,7 @@ describe('canvas: 边删除', () => {
     const res = await fetch(`${BASE_URL}/api/edges/${edge.id}`, { method: 'DELETE' });
     expect(res.status).toBe(204);
 
-    const snap = await api<any>('/api/canvas');
+    const snap = await getCanvas();
     expect(snap.edges.find((e: any) => e.id === edge.id)).toBeUndefined();
     // 边删除不影响两端节点
     expect(snap.nodes.find((x: any) => x.id === A.id)).toBeDefined();

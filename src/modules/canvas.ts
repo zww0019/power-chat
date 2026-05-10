@@ -7,10 +7,9 @@ import type { Canvas, Node, Edge, Message, NodeType, EdgeKind } from '../types.j
 import { StreamingNodeError, NodeAlreadyExistsError } from '../types.js';
 import { getPersistence } from './persistence.js';
 
-const SINGLE_CANVAS_ID = 'canvas_main';
-
 // 运行时状态：哪些节点正在流式输出（INV-7 守卫）。
 // 用内存 Set 而非持久化，因为进程重启后所有流必然已中断，不需要恢复。
+// 项目维度无串扰：节点 id 全局唯一，跨项目共用此 Set 不会发生 nodeId 冲突。
 const streamingNodes = new Set<string>();
 
 /** 标记节点进入流式状态；由 conversation 模块在开始 stream 时调用 */
@@ -31,48 +30,57 @@ function newId(prefix: string): string {
 }
 const nowIso = () => new Date().toISOString();
 
-export async function getOrCreateCanvas(): Promise<Canvas> {
+// 创建画布。canvasId 由调用方（project 模块）指定，确保与 Project.canvasId 一一对应。
+// 与 getCanvasSnapshot 分离：语义是"创建"，不是"读取"；若 id 已存在则幂等返回——
+// 防止 project.ensureDefaultProject 迁移路径重复调用时写坏旧数据。
+export async function createCanvas(canvasId: string): Promise<Canvas> {
   const p = getPersistence();
-  let canvas = await p.get<Canvas>('canvases', SINGLE_CANVAS_ID);
-  if (!canvas) {
-    canvas = {
-      id: SINGLE_CANVAS_ID,
-      viewportX: 0,
-      viewportY: 0,
-      viewportZoom: 1,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-    await p.put('canvases', SINGLE_CANVAS_ID, canvas);
-  }
+  const existing = await p.get<Canvas>('canvases', canvasId);
+  if (existing) return existing;
+  const canvas: Canvas = {
+    id: canvasId,
+    viewportX: 0,
+    viewportY: 0,
+    viewportZoom: 1,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+  await p.put('canvases', canvasId, canvas);
   return canvas;
 }
 
-export async function getCanvasSnapshot(): Promise<{
+// 读取指定画布快照。canvasId 必填——多项目场景下没有"默认画布"概念。
+// nodes/edges/messages 严格按 canvasId 过滤，避免跨项目数据混入。
+// edges/messages 通过 nodes 推导其归属（messages.nodeId / edges.parent|childNodeId）。
+export async function getCanvasSnapshot(canvasId: string): Promise<{
   canvas: Canvas;
   nodes: Node[];
   edges: Edge[];
   messages: Message[];
-}> {
+} | null> {
   const p = getPersistence();
-  const canvas = await getOrCreateCanvas();
-  const [nodes, edges, messages] = await Promise.all([
-    p.list<Node>('nodes'),
-    p.list<Edge>('edges'),
-    p.list<Message>('messages'),
+  const canvas = await p.get<Canvas>('canvases', canvasId);
+  if (!canvas) return null;
+  const nodes = await p.list<Node>('nodes', (n) => n.canvasId === canvasId);
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const [edges, messages] = await Promise.all([
+    p.list<Edge>('edges', (e) => nodeIds.has(e.parentNodeId) || nodeIds.has(e.childNodeId)),
+    p.list<Message>('messages', (m) => nodeIds.has(m.nodeId)),
   ]);
   return { canvas, nodes, edges, messages };
 }
 
+// 创建节点。canvasId 必填——必须由调用方明确所属画布，不再走默认值。
+// writer/refine 等通过 sourceNodeIds[0] 推导出 canvasId 后传入。
 export async function createNode(params: {
+  canvasId: string;
   positionX: number;
   positionY: number;
   type?: NodeType;
 }): Promise<Node> {
-  await getOrCreateCanvas();
   const node: Node = {
     id: newId('n'),
-    canvasId: SINGLE_CANVAS_ID,
+    canvasId: params.canvasId,
     type: params.type ?? 'dialogue',
     positionX: params.positionX,
     positionY: params.positionY,

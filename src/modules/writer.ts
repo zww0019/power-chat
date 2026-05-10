@@ -38,14 +38,20 @@ export async function createWrite(params: {
   if (params.sourceNodeIds.length === 0) {
     throw new Error('sourceNodeIds required');
   }
+  // 撰写节点必须与源节点同属一个 canvas——不同 canvas 的节点互为不可见（快照按 canvasId 过滤），
+  // 混入会导致撰写节点在调用方的 canvas 快照里消失
+  let canvasId: string | null = null;
   for (const id of params.sourceNodeIds) {
     const n = await canvas.getNode(id);
     if (!n) throw new Error(`source node not found: ${id}`);
+    if (canvasId === null) canvasId = n.canvasId;
+    else if (canvasId !== n.canvasId) throw new Error('source nodes must belong to the same canvas');
   }
 
   // 创建撰写节点
   const center = await computeGeometricCenter(params.sourceNodeIds);
   const writtenNode = await canvas.createNode({
+    canvasId: canvasId!,
     positionX: center.x,
     positionY: center.y,
     type: 'written',

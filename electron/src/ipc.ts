@@ -19,6 +19,7 @@ import * as writer from '../../src/modules/writer.js';
 import * as settings from '../../src/modules/settings.js';
 import * as cognition from '../../src/modules/cognition-client.js';
 import * as abortRegistry from '../../src/modules/abort-registry.js';
+import * as project from '../../src/modules/project.js';
 import { getPersistence } from '../../src/modules/persistence.js';
 import {
   ContextOverflowError,
@@ -106,15 +107,76 @@ const buildFailure = (status: number, error: string, message?: string): RpcResul
 });
 
 const routes: Route[] = [
+  // === project ===
+  // 多项目管理：列表、创建、改名、touch（更新 lastOpenedAt）、删除（级联）
+  {
+    method: 'GET',
+    pattern: '/api/projects',
+    handler: async () => buildSuccess(200, await project.listProjects()),
+  },
+  {
+    method: 'POST',
+    pattern: '/api/projects',
+    handler: async ({ body }) => {
+      const name = typeof body?.name === 'string' ? body.name : '';
+      if (!name.trim()) return buildFailure(400, 'bad_request', 'name required');
+      return buildSuccess(201, await project.createProject({ name }));
+    },
+  },
+  {
+    method: 'PATCH',
+    pattern: /^\/api\/projects\/([^/]+)$/,
+    handler: async ({ match, body }) => {
+      try {
+        const updated = await project.updateProject(match![1]!, body ?? {});
+        if (!updated) return buildFailure(404, 'not_found');
+        return buildSuccess(200, updated);
+      } catch (e: any) {
+        return buildFailure(400, 'bad_request', e.message);
+      }
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/api\/projects\/([^/]+)\/touch$/,
+    handler: async ({ match }) => {
+      await project.touchProject(match![1]!);
+      return buildSuccess(204);
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/api\/projects\/([^/]+)$/,
+    handler: async ({ match }) => {
+      const deleted = await project.deleteProject(match![1]!);
+      if (!deleted) return buildFailure(404, 'not_found');
+      return buildSuccess(204);
+    },
+  },
+  // === canvas ===
+  // projectId 必填（query 参数）：经 project.canvasId 反查真实 canvas，
+  // 再走 getCanvasSnapshot(canvasId) 取严格按 canvasId 过滤的快照
   {
     method: 'GET',
     pattern: '/api/canvas',
-    handler: async () => buildSuccess(200, await canvas.getCanvasSnapshot()),
+    handler: async ({ query }) => {
+      const projectId = query.get('projectId') ?? '';
+      if (!projectId) return buildFailure(400, 'bad_request', 'projectId required');
+      const proj = await project.getProject(projectId);
+      if (!proj) return buildFailure(404, 'not_found', `project not found: ${projectId}`);
+      const snapshot = await canvas.getCanvasSnapshot(proj.canvasId);
+      if (!snapshot) return buildFailure(404, 'not_found', 'canvas not found');
+      return buildSuccess(200, snapshot);
+    },
   },
+  // 创建节点：必须显式声明 canvasId（前端从已加载的 canvas snapshot 取 id 透传）
   {
     method: 'POST',
     pattern: '/api/nodes',
     handler: async ({ body }) => {
+      if (typeof body?.canvasId !== 'string' || !body.canvasId) {
+        return buildFailure(400, 'bad_request', 'canvasId required');
+      }
       if (typeof body?.positionX !== 'number' || typeof body?.positionY !== 'number') {
         return buildFailure(400, 'bad_request', 'positionX, positionY required');
       }

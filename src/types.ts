@@ -16,6 +16,19 @@ export interface Canvas {
   updatedAt: string;
 }
 
+// 项目实体：一个项目 1:1 关联一个画布。项目是用户组织工作的顶层单元，
+// 提供画布的命名 / 创建时间 / 最近打开时间等元数据。
+// canvasId 反向引用真正承载节点的 Canvas id；删除项目级联删 canvas + nodes + edges + messages。
+export interface Project {
+  id: string;
+  name: string;
+  canvasId: string;
+  createdAt: string;
+  updatedAt: string;
+  // 最近一次"从首页打开"该项目的时间。null = 从未打开过；用于首页按访问近期排序
+  lastOpenedAt: string | null;
+}
+
 export interface Node {
   id: string;
   canvasId: string;

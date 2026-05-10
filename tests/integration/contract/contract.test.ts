@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import YAML from 'yaml';
-import { api } from '../helpers';
+import { api, getCanvas, ensureTestProject } from '../helpers';
 
 // Contract test：核对 mock-server 的实际响应是否匹配 docs/04-api-contract.yaml 定义。
 // Stage 6 切到真实后端时，**这些测试不变** —— 它们守的是契约边界。
@@ -43,7 +43,7 @@ describe('contract: OpenAPI 契约可加载', () => {
 
 describe('contract: 实际响应匹配 schema (sanity check)', () => {
   it('GET /api/canvas 响应包含 canvas/nodes/edges/messages 四个字段', async () => {
-    const data = await api<any>('/api/canvas');
+    const data = await getCanvas();
     expect(data).toHaveProperty('canvas');
     expect(data).toHaveProperty('nodes');
     expect(data).toHaveProperty('edges');
@@ -55,9 +55,10 @@ describe('contract: 实际响应匹配 schema (sanity check)', () => {
   });
 
   it('POST /api/nodes 返回 Node schema 必填字段全在', async () => {
+    const proj = await ensureTestProject();
     const node = await api<any>('/api/nodes', {
       method: 'POST',
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
+      body: JSON.stringify({ canvasId: proj.canvasId, positionX: 0, positionY: 0 }),
       expectStatus: 201,
     });
     const required = ['id', 'canvasId', 'type', 'positionX', 'positionY', 'width', 'collapsed', 'createdAt', 'updatedAt'];
@@ -69,10 +70,11 @@ describe('contract: 实际响应匹配 schema (sanity check)', () => {
   });
 
   it('错误响应格式统一为 {error, message?} schema', async () => {
+    const proj = await ensureTestProject();
     const res = await fetch(`${process.env.POWER_CHAT_API ?? 'http://localhost:3001'}/api/nodes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ positionX: 'not_a_number' }),
+      body: JSON.stringify({ canvasId: proj.canvasId, positionX: 'not_a_number' }),
     });
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -82,10 +84,11 @@ describe('contract: 实际响应匹配 schema (sanity check)', () => {
 
 describe('contract: 端点状态码符合契约', () => {
   it('POST /api/nodes 返回 201 (Created)', async () => {
+    const proj = await ensureTestProject();
     const res = await fetch(`${process.env.POWER_CHAT_API ?? 'http://localhost:3001'}/api/nodes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ positionX: 0, positionY: 0 }),
+      body: JSON.stringify({ canvasId: proj.canvasId, positionX: 0, positionY: 0 }),
     });
     expect(res.status).toBe(201);
   });

@@ -27,15 +27,46 @@ export async function api<T = unknown>(
 }
 
 /**
+ * 测试 fixture：lazy 拿到一个可用项目的 canvasId。
+ * 多项目改造后 createNode 必须显式传 canvasId，但绝大多数测试只关心"在某画布里创建节点"，
+ * 不关心是哪个项目。每次调用先尝试取项目列表的首项；若无项目（reset 后状态）则创建一个测试项目。
+ *
+ * 不缓存——beforeEach 会 reset 数据库，缓存 id 会指向已删除的项目。每次 fetch 一次开销可忽略。
+ */
+export async function ensureTestProject(): Promise<{ id: string; canvasId: string }> {
+  const projects = await api<any[]>('/api/projects');
+  if (projects.length > 0) {
+    return { id: projects[0].id, canvasId: projects[0].canvasId };
+  }
+  const created = await api<any>('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: '测试项目' }),
+    expectStatus: 201,
+  });
+  return { id: created.id, canvasId: created.canvasId };
+}
+
+/**
+ * 测试 fixture：取当前测试项目的画布快照。包装 GET /api/canvas?projectId=xxx，
+ * 让既有测试代码（原本调 api('/api/canvas')）只需替换函数名。
+ */
+export async function getCanvas(): Promise<{ canvas: any; nodes: any[]; edges: any[]; messages: any[] }> {
+  const proj = await ensureTestProject();
+  return api<any>(`/api/canvas?projectId=${encodeURIComponent(proj.id)}`);
+}
+
+/**
  * 测试 fixture：创建一个节点。给定坐标省略时默认 (0,0)。
- * 抽出避免每个测试都手写 POST /api/nodes 的 expectStatus 断言。
+ * 自动调 ensureTestProject 拿 canvasId，调用方无需关心多项目隔离。
  */
 export async function createNode(opts?: {
   positionX?: number;
   positionY?: number;
   type?: 'dialogue' | 'refined';
 }): Promise<{ id: string; [k: string]: any }> {
+  const proj = await ensureTestProject();
   const body: Record<string, unknown> = {
+    canvasId: proj.canvasId,
     positionX: opts?.positionX ?? 0,
     positionY: opts?.positionY ?? 0,
   };

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, BASE_URL, createNode, sendMessage } from '../helpers';
+import { api, BASE_URL, createNode, sendMessage , getCanvas } from '../helpers';
 import { AGENT_REACT_FORCE_SEARCH } from '../../../src/modules/fixtures';
 
 // agent-module · ReAct loop 端到端（mock 工具）
@@ -19,7 +19,7 @@ interface AssistantMessageView {
 }
 
 async function getAssistantMessage(nodeId: string): Promise<AssistantMessageView | undefined> {
-  const snap = await api<{ messages: AssistantMessageView[] }>('/api/canvas');
+  const snap = await getCanvas() as Promise<{ messages: AssistantMessageView[] }>;
   return snap.messages.find((m) => m.role === 'assistant' && m.nodeId === nodeId);
 }
 
@@ -86,7 +86,7 @@ describe('agent: ReAct loop 端到端 - native_tools 模式', () => {
     // 第二条普通对话（不含触发词）
     const events = await sendMessage(node.id, '继续聊');
     expect(events[events.length - 1]!.type).toBe('done');
-    const snap = await api<{ messages: Array<{ role: string; nodeId: string; sequence: number; agentTrace?: unknown }> }>('/api/canvas');
+    const snap = await getCanvas() as Promise<{ messages: Array<{ role: string; nodeId: string; sequence: number; agentTrace?: unknown }> }>;
     const asstMsgs = snap.messages
       .filter((m) => m.nodeId === node.id && m.role === 'assistant')
       .sort((a, b) => a.sequence - b.sequence);

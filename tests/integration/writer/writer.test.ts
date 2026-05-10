@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { api, consumeSSE, BASE_URL } from '../helpers';
+import { api, consumeSSE, BASE_URL, createNode } from '../helpers';
 
 // writer-module 集成测试
 // INV-2 (written 节点不展开父链) + session-writer 流程
@@ -9,11 +9,7 @@ beforeEach(async () => {
 });
 
 async function createNodeWithContent(content: string): Promise<string> {
-  const n = await api<any>('/api/nodes', {
-    method: 'POST',
-    body: JSON.stringify({ positionX: 0, positionY: 0 }),
-    expectStatus: 201,
-  });
+  const n = await createNode();
   await consumeSSE(`/api/nodes/${n.id}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
