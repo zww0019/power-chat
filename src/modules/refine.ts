@@ -11,6 +11,7 @@ import * as canvas from './canvas.js';
 import { streamChat } from './llm-client.js';
 import { getSettings } from './settings.js';
 import { newId, nowIso, runAssistantStream, computeGeometricCenter } from './_utils.js';
+import * as cognitionClient from './cognition-client.js';
 
 interface PendingRefine {
   refinedNodeId: string;
@@ -77,7 +78,8 @@ export async function createRefine(params: {
 
 // 取所有源节点的 messages，剥离 reasoning（INV-11），拼装成提炼任务输入。
 // Prompt 严格按视觉规范文档 §4.2，遵守 R010（不出现画布/节点/提炼概念）+ R011（强制四栏）。
-async function assembleRefineInput(task: PendingRefine): Promise<LLMMessage[]> {
+// personaPrompt：cognition (Alter) 注入的行为指令，会拼接到基础 REFINE_SYSTEM_PROMPT 之后
+async function assembleRefineInput(task: PendingRefine, personaPrompt: string): Promise<LLMMessage[]> {
   const p = getPersistence();
   const sections: string[] = [];
   for (let i = 0; i < task.sourceNodeIds.length; i++) {
@@ -103,7 +105,7 @@ async function assembleRefineInput(task: PendingRefine): Promise<LLMMessage[]> {
     : '请基于以下材料，做综合性提炼。';
 
   return [
-    { role: 'system', content: REFINE_SYSTEM_PROMPT },
+    { role: 'system', content: cognitionClient.composeSystemPrompt(REFINE_SYSTEM_PROMPT, personaPrompt) },
     { role: 'user', content: `${intro}\n\n材料如下：\n\n${materialBlock}` },
   ];
 }
@@ -146,6 +148,8 @@ export async function* streamRefine(token: string): AsyncIterable<StreamEvent> {
 
   const p = getPersistence();
   const settings = await getSettings();
+  // cognition 缓存：注入 system prompt + 标记 asstMsg.personaVersion
+  const inj = await cognitionClient.getCachedInjection();
 
   // 创建提炼节点的 assistant 消息（流式累积）
   const asstMsg: Message = {
@@ -155,6 +159,7 @@ export async function* streamRefine(token: string): AsyncIterable<StreamEvent> {
     content: '',
     reasoningContent: '',
     reasoningDetails: null,
+    personaVersion: inj.personaVersion,
     sequence: 0,
     status: 'streaming',
     wasResumed: false,
@@ -164,7 +169,7 @@ export async function* streamRefine(token: string): AsyncIterable<StreamEvent> {
   canvas.markStreaming(task.refinedNodeId);
 
   try {
-    const messages = await assembleRefineInput(task);
+    const messages = await assembleRefineInput(task, inj.personaPrompt);
     // title 在 createRefine 时已按 "提炼·N 节点" 设定，不需要在 done 后追加额外事件
     yield* runAssistantStream(
       streamChat({

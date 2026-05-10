@@ -17,6 +17,7 @@ import { getSettings } from './settings.js';
 import { newId, nowIso, runAgentAssistantStream } from './_utils.js';
 import { runAgentLoop } from './agent.js';
 import { registerAbortController, unregisterAbortController } from './abort-registry.js';
+import * as cognitionClient from './cognition-client.js';
 
 // 取节点的所有 messages，按 sequence 升序
 async function getMessagesOfNode(nodeId: string): Promise<Message[]> {
@@ -112,6 +113,9 @@ function toLLMMessage(m: Message): LLMMessage {
   // reasoningDetails 跨轮回传（仅 OpenRouter 在 toOpenAIMessage 真正写入请求体）：
   // 即便用户后来切到其他 provider，本字段在 LLMMessage 上无副作用——会被静默忽略
   if (m.reasoningDetails && m.reasoningDetails.length > 0) out.reasoningDetails = m.reasoningDetails;
+  // personaVersion 透传供 cognition-client 构造 turns 时识别历史 assistant 输出来自哪个画像周期
+  // toOpenAIMessage 不读此字段——不会进入真实 LLM 请求体
+  if (m.personaVersion) out.personaVersion = m.personaVersion;
   return out;
 }
 
@@ -138,6 +142,9 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
   const existing = await getMessagesOfNode(params.nodeId);
   const nextSeq = (existing[existing.length - 1]?.sequence ?? -1) + 1;
 
+  // 0. 取 cognition 缓存 personaPrompt + version（异步缓存策略：零延迟读上次 cycle 结果）
+  const inj = await cognitionClient.getCachedInjection();
+
   // 1. 持久化 user 消息
   const userMsg: Message = {
     id: newId('m'),
@@ -155,7 +162,7 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
   // 或 edit 时，前端持有的乐观 ID 在后端查不到 → 400 not_found。
   yield { type: 'user_persisted', messageId: userMsg.id };
 
-  // 2. 创建 assistant 占位消息
+  // 2. 创建 assistant 占位消息（写入当前 cognition 画像 version 用于反污染）
   const asstMsg: Message = {
     id: newId('m'),
     nodeId: params.nodeId,
@@ -163,6 +170,7 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
     content: '',
     reasoningContent: '',
     reasoningDetails: null,
+    personaVersion: inj.personaVersion,
     sequence: nextSeq + 1,
     status: 'streaming',
     wasResumed: false,
@@ -180,10 +188,20 @@ export async function* sendMessage(params: SendMessageParams): AsyncIterable<Str
     const messages = await assembleContext(params.nodeId);
     const settings = await getSettings();
 
-    // 5. 在 messages 头部注入"思考伙伴"system prompt（R010 守卫：不出现画布概念）
+    // 4a. 后台触发 cognition 反思循环（异步缓存策略：fire-and-forget，不阻塞主对话；
+    // 结果写入 settings 缓存，下一轮 sendMessage 即可用上新 personaPrompt）。
+    // cognitionEnabled=false / 服务不可达时内部静默 no-op
+    void cognitionClient.fireAsyncCycle(
+      cognitionClient.buildCycleTurns(messages, params.content, inj.personaVersion),
+    );
+
+    // 5. 在 messages 头部注入"思考伙伴"system prompt（R010 守卫：不出现画布概念）+ cognition 行为指令
     // agent loop 会在内部根据 tool 模式追加工具引导 prompt（R014/R017）
     const messagesWithSystem: LLMMessage[] = [
-      { role: 'system', content: CONVERSATION_SYSTEM_PROMPT },
+      {
+        role: 'system',
+        content: cognitionClient.composeSystemPrompt(CONVERSATION_SYSTEM_PROMPT, inj.personaPrompt),
+      },
       ...messages,
     ];
 

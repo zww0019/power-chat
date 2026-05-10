@@ -29,6 +29,8 @@ declare global {
       }>;
       startStream(path: string, body?: unknown): Promise<{ streamId: string } | { error: string }>;
       onStreamEvent(streamId: string, callback: (e: StreamEvent) => void): () => void;
+      // 在系统默认浏览器打开外链（仅允许 http/https）；主进程层做 URL 校验
+      openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
@@ -221,6 +223,81 @@ export const api = {
       return;
     }
     await consumeSSE(res.body, onEvent);
+  },
+
+  // === Cognition (Alter) 接口 ===
+  // 全部经主进程 /api/cognition/* 路由转发到 Alter HTTP 服务（默认 :8000）。
+  // 服务不可达统一抛错（502 cognition_unreachable），由 UI 层降级处理。
+  async cognitionHealth(): Promise<{ ok: boolean; status?: number; body?: unknown; error?: string }> {
+    try {
+      return await request('/cognition/health');
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) };
+    }
+  },
+
+  async cognitionState(): Promise<unknown> {
+    return request('/cognition/state');
+  },
+
+  async cognitionDeleteState(): Promise<{ status: string }> {
+    return request('/cognition/state', { method: 'DELETE' });
+  },
+
+  async cognitionSummary(): Promise<Record<string, string>> {
+    return request('/cognition/summary');
+  },
+
+  async cognitionExplain(context = 'default'): Promise<unknown> {
+    return request(`/cognition/explain?context=${encodeURIComponent(context)}`);
+  },
+
+  async cognitionForget(itemId: string): Promise<{ status: string }> {
+    return request('/cognition/forget', { method: 'POST', body: JSON.stringify({ item_id: itemId }) });
+  },
+
+  async cognitionFreeze(patternId: string): Promise<{ status: string }> {
+    return request('/cognition/freeze', { method: 'POST', body: JSON.stringify({ pattern_id: patternId }) });
+  },
+
+  async cognitionUnfreeze(patternId: string): Promise<{ status: string }> {
+    return request('/cognition/unfreeze', { method: 'POST', body: JSON.stringify({ pattern_id: patternId }) });
+  },
+
+  async cognitionUsers(): Promise<unknown> {
+    return request('/cognition/users');
+  },
+
+  async cognitionMetrics(): Promise<unknown> {
+    return request('/cognition/metrics');
+  },
+
+  async cognitionGetSettings(): Promise<unknown> {
+    return request('/cognition/settings');
+  },
+
+  async cognitionPutSettings(patch: Record<string, unknown>): Promise<unknown> {
+    return request('/cognition/settings', { method: 'PUT', body: JSON.stringify(patch) });
+  },
+
+  async cognitionReplay(payload: { conversations: unknown[]; force?: boolean; persist?: boolean; from_empty?: boolean }): Promise<unknown> {
+    return request('/cognition/replay', { method: 'POST', body: JSON.stringify(payload) });
+  },
+
+  // 在系统默认浏览器打开外链——cognition 控制台等场景使用。
+  // Electron：经主进程 IPC（已做 URL 白名单校验）。
+  // 浏览器 dev：fallback 到 window.open（同源策略不影响外链跳转）。
+  async openExternal(url: string): Promise<boolean> {
+    if (isElectron && window.powerChat?.openExternal) {
+      const r = await window.powerChat.openExternal(url);
+      return r.ok;
+    }
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return true;
+    } catch {
+      return false;
+    }
   },
 };
 

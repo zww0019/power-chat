@@ -89,6 +89,9 @@ export default function App() {
   const [writePos, setWritePos] = useState<{ x: number; y: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // cognition 服务连通状态：用于设置按钮上的角标提示。
+  // 'unknown' 启动时；'disabled' 用户关闭了 cognitionEnabled；'ok' 服务可达；'error' 服务不可达
+  const [cognitionStatus, setCognitionStatus] = useState<'unknown' | 'disabled' | 'ok' | 'error'>('unknown');
 
   // 首次进入：从 mock server 拉初始 canvas（单画布）
   useEffect(() => {
@@ -117,6 +120,29 @@ export default function App() {
       }
     }).catch((e) => console.error('getSettings failed', e));
   }, [hydrated]);
+
+  // 启动后 + SettingsDialog 关闭时探测 cognition 服务连通状态，给设置按钮上的小角标用。
+  // 不阻塞主流程；连不上仅展示红角标，对话仍可正常进行（异步缓存策略兜底）
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await api.getSettings();
+        if (cancelled) return;
+        if (!s.cognitionEnabled) {
+          setCognitionStatus('disabled');
+          return;
+        }
+        const r = await api.cognitionHealth();
+        if (cancelled) return;
+        setCognitionStatus(r.ok ? 'ok' : 'error');
+      } catch {
+        if (!cancelled) setCognitionStatus('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hydrated, settingsOpen]);
 
   // 全局键盘监听：Cmd/Ctrl+Z 撤销；Delete / Backspace 删除 selectedEdgeId 或 activeNodeId。
   // Cmd+Z 分支必须先于 Delete 检测执行并 return，避免某些键盘组合下的误判。
@@ -666,9 +692,34 @@ export default function App() {
           <ToolbarIconButton onClick={() => setHelpOpen(true)} title="帮助">
             <HelpCircle size={17} strokeWidth={1.6} />
           </ToolbarIconButton>
-          <ToolbarIconButton onClick={() => setSettingsOpen(true)} title="模型设置">
-            <SettingsIcon size={17} strokeWidth={1.6} />
-          </ToolbarIconButton>
+          <div style={{ position: 'relative', display: 'inline-flex' }}>
+            <ToolbarIconButton
+              onClick={() => setSettingsOpen(true)}
+              title={
+                cognitionStatus === 'ok' ? '模型设置 · 认知建模已连接'
+                : cognitionStatus === 'error' ? '模型设置 · 认知建模服务不可达（点开查看）'
+                : cognitionStatus === 'disabled' ? '模型设置 · 认知建模已关闭'
+                : '模型设置'
+              }
+            >
+              <SettingsIcon size={17} strokeWidth={1.6} />
+            </ToolbarIconButton>
+            {/* cognition 状态角标：连通=不显示；不可达=红色；关闭=灰色；未知=不显示 */}
+            {(cognitionStatus === 'error' || cognitionStatus === 'disabled') && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: 4,
+                  right: 4,
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: cognitionStatus === 'error' ? color.danger : color.ink400,
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
 

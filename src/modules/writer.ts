@@ -21,6 +21,7 @@ import * as canvas from './canvas.js';
 import { streamChat } from './llm-client.js';
 import { getSettings } from './settings.js';
 import { newId, nowIso, computeGeometricCenter } from './_utils.js';
+import * as cognitionClient from './cognition-client.js';
 
 interface PendingWrite {
   writtenNodeId: string;
@@ -83,7 +84,8 @@ export async function createWrite(params: {
 
 // 取所有源节点的 messages，剥离 reasoning（INV-11），拼装成撰写任务输入。
 // R010 守卫：不出现"画布/节点/提炼/撰写"等产品概念。
-async function assembleWriteInput(task: PendingWrite): Promise<LLMMessage[]> {
+// personaPrompt：cognition (Alter) 注入的行为指令，会拼接到基础 WRITER_SYSTEM_PROMPT 之后
+async function assembleWriteInput(task: PendingWrite, personaPrompt: string): Promise<LLMMessage[]> {
   const p = getPersistence();
   const sections: string[] = [];
   for (let i = 0; i < task.sourceNodeIds.length; i++) {
@@ -110,7 +112,7 @@ async function assembleWriteInput(task: PendingWrite): Promise<LLMMessage[]> {
     : '请基于以下对话材料，撰写一篇文章。';
 
   return [
-    { role: 'system', content: WRITER_SYSTEM_PROMPT },
+    { role: 'system', content: cognitionClient.composeSystemPrompt(WRITER_SYSTEM_PROMPT, personaPrompt) },
     { role: 'user', content: `${intro}\n\n对话材料如下：\n\n${materialBlock}` },
   ];
 }
@@ -172,6 +174,8 @@ export async function* streamWrite(token: string): AsyncIterable<StreamEvent> {
 
   const p = getPersistence();
   const settings = await getSettings();
+  // cognition 缓存：用于注入 Phase 1 / Phase 2 system prompt + 标记 asstMsg.personaVersion
+  const inj = await cognitionClient.getCachedInjection();
 
   const asstMsg: Message = {
     id: newId('m'),
@@ -180,6 +184,7 @@ export async function* streamWrite(token: string): AsyncIterable<StreamEvent> {
     content: '',
     reasoningContent: '',
     reasoningDetails: null,
+    personaVersion: inj.personaVersion,
     sequence: 0,
     status: 'streaming',
     wasResumed: false,
@@ -193,7 +198,7 @@ export async function* streamWrite(token: string): AsyncIterable<StreamEvent> {
 
   try {
     // ===== Phase 1: 写初稿（流式输出）=====
-    const draftMessages = await assembleWriteInput(task);
+    const draftMessages = await assembleWriteInput(task, inj.personaPrompt);
     const draftStream = streamChat({
       messages: draftMessages,
       enableReasoning: settings.thinkingModeEnabled,
@@ -229,7 +234,7 @@ export async function* streamWrite(token: string): AsyncIterable<StreamEvent> {
     // 草稿不在多轮间循环回灌，从根上避免 AI 味累积。
     let finalContent: string | undefined;
     if (draftText.length > 50) {
-      const rewritten = await humanizerExecRewrite(draftText, task.writingRequest);
+      const rewritten = await humanizerExecRewrite(draftText, task.writingRequest, inj.personaPrompt);
       // 长度安全网：改写后大幅缩水（<50%）视作 LLM 异常截断，回退初稿
       if (rewritten && rewritten.length >= draftText.length * 0.5 && rewritten !== draftText) {
         contentBuf = rewritten;
@@ -264,15 +269,17 @@ async function persistDraft(
 }
 
 // Humanizer-rewrite: 执行者改写
+// personaPrompt：cognition 注入的行为指令，与 HUMANIZER_EXECUTOR_PROMPT 拼接
 async function humanizerExecRewrite(
   draft: string,
   writingRequest: string | null,
+  personaPrompt: string,
 ): Promise<string | null> {
   const settings = await getSettings();
   let content = '';
   for await (const evt of streamChat({
     messages: [
-      { role: 'system', content: HUMANIZER_EXECUTOR_PROMPT },
+      { role: 'system', content: cognitionClient.composeSystemPrompt(HUMANIZER_EXECUTOR_PROMPT, personaPrompt) },
       { role: 'user', content: `请对以下文章草稿进行拟人化改写。\n\n${writingRequest ? `原始写作要求：${writingRequest}\n\n` : ''}草稿如下：\n\n${draft}` },
     ],
     enableReasoning: settings.thinkingModeEnabled,

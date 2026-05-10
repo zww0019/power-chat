@@ -11,11 +11,13 @@
 // 每条端点的输入校验、错误映射都封在自己的 handler 里，便于增删与单元测试。
 
 import type { IpcMain, WebContents } from 'electron';
+import { shell } from 'electron';
 import * as canvas from '../../src/modules/canvas.js';
 import * as conversation from '../../src/modules/conversation.js';
 import * as refine from '../../src/modules/refine.js';
 import * as writer from '../../src/modules/writer.js';
 import * as settings from '../../src/modules/settings.js';
+import * as cognition from '../../src/modules/cognition-client.js';
 import * as abortRegistry from '../../src/modules/abort-registry.js';
 import { getPersistence } from '../../src/modules/persistence.js';
 import {
@@ -52,6 +54,21 @@ export function registerIpcHandlers(ipcMain: IpcMain, getWebContents: () => WebC
     } catch (e: any) {
       console.error('[ipc] rpc error', e);
       return { status: 500, error: { error: 'internal', message: e.message ?? String(e) } };
+    }
+  });
+
+  // 渲染进程通过此 IPC 让主进程在系统默认浏览器打开外链——
+  // cognition 控制台（http://localhost:8000/）按钮等场景使用。
+  // 此处正则守卫仅允许 http(s) scheme，非 http(s) URL 在到达 shell.openExternal 之前就已拒绝
+  ipcMain.handle('shell-open-external', async (_evt, url: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      return { ok: false, error: 'only http(s) URLs allowed' };
+    }
+    try {
+      await shell.openExternal(url);
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) };
     }
   });
 
@@ -280,6 +297,141 @@ const routes: Route[] = [
     handler: async () => {
       await getPersistence().reset();
       return buildSuccess(204);
+    },
+  },
+  // === Cognition (Alter HTTP 服务) 12 条转发路由 ===
+  // 全部走 cognition-client 模块；服务不可达统一映射为 502 cognition_unreachable，
+  // 前端按降级 UI 处理（保留缓存继续主对话 + 红角标提示）
+  {
+    method: 'GET',
+    pattern: '/api/cognition/health',
+    handler: async () => {
+      const r = await cognition.health();
+      return r.ok ? buildSuccess(200, r) : buildFailure(502, 'cognition_unreachable', r.error);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: '/api/cognition/state',
+    handler: async () => {
+      const data = await cognition.getState();
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: '/api/cognition/state',
+    handler: async () => {
+      const ok = await cognition.deleteState();
+      return ok ? buildSuccess(200, { status: 'ok' }) : buildFailure(502, 'cognition_unreachable');
+    },
+  },
+  {
+    method: 'GET',
+    pattern: '/api/cognition/summary',
+    handler: async () => {
+      const data = await cognition.getSummary();
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: '/api/cognition/explain',
+    handler: async ({ query }) => {
+      const ctx = query.get('context') ?? 'default';
+      const data = await cognition.explain(ctx);
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: '/api/cognition/forget',
+    handler: async ({ body }) => {
+      if (typeof body?.item_id !== 'string' || !body.item_id) {
+        return buildFailure(400, 'bad_request', 'item_id required');
+      }
+      const ok = await cognition.forget(body.item_id);
+      return ok ? buildSuccess(200, { status: 'ok' }) : buildFailure(502, 'cognition_unreachable');
+    },
+  },
+  {
+    method: 'POST',
+    pattern: '/api/cognition/freeze',
+    handler: async ({ body }) => {
+      if (typeof body?.pattern_id !== 'string' || !body.pattern_id) {
+        return buildFailure(400, 'bad_request', 'pattern_id required');
+      }
+      const ok = await cognition.freeze(body.pattern_id);
+      return ok ? buildSuccess(200, { status: 'ok' }) : buildFailure(502, 'cognition_unreachable');
+    },
+  },
+  {
+    method: 'POST',
+    pattern: '/api/cognition/unfreeze',
+    handler: async ({ body }) => {
+      if (typeof body?.pattern_id !== 'string' || !body.pattern_id) {
+        return buildFailure(400, 'bad_request', 'pattern_id required');
+      }
+      const ok = await cognition.unfreeze(body.pattern_id);
+      return ok ? buildSuccess(200, { status: 'ok' }) : buildFailure(502, 'cognition_unreachable');
+    },
+  },
+  {
+    method: 'GET',
+    pattern: '/api/cognition/users',
+    handler: async () => {
+      const data = await cognition.listUsers();
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: '/api/cognition/metrics',
+    handler: async () => {
+      const data = await cognition.getMetrics();
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: '/api/cognition/settings',
+    handler: async () => {
+      const data = await cognition.getCognitionSettings();
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'PUT',
+    pattern: '/api/cognition/settings',
+    handler: async ({ body }) => {
+      if (!body || typeof body !== 'object') {
+        return buildFailure(400, 'bad_request', 'body must be a non-empty object');
+      }
+      const data = await cognition.putCognitionSettings(body);
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: '/api/cognition/replay',
+    handler: async ({ body }) => {
+      if (!Array.isArray(body?.conversations)) {
+        return buildFailure(400, 'bad_request', 'conversations[] required');
+      }
+      const data = await cognition.replay(body.conversations, {
+        force: body.force,
+        persist: body.persist,
+        fromEmpty: body.from_empty,
+      });
+      if (data === null) return buildFailure(502, 'cognition_unreachable');
+      return buildSuccess(200, data);
     },
   },
 ];

@@ -19,6 +19,7 @@ import * as conversation from '../../src/modules/conversation.js';
 import * as refine from '../../src/modules/refine.js';
 import * as writer from '../../src/modules/writer.js';
 import * as settings from '../../src/modules/settings.js';
+import * as cognition from '../../src/modules/cognition-client.js';
 import * as abortRegistry from '../../src/modules/abort-registry.js';
 import { getPersistence } from '../../src/modules/persistence.js';
 import type { StreamEvent } from '../../src/types.js';
@@ -293,6 +294,154 @@ app.post('/api/settings/test', async (_req, res) => {
     return;
   }
   res.json({ ok: true, modelsAvailable: result.modelsAvailable });
+});
+
+// === Cognition (Alter HTTP 服务) 12 条转发路由 ===
+// 与 electron/src/ipc.ts 的 /api/cognition/* 路由 1:1 对称（项目宪法：两端路由必须同形）
+// 全部走 cognition-client 模块；服务不可达统一 502 cognition_unreachable
+app.get('/api/cognition/health', async (_req, res) => {
+  const r = await cognition.health();
+  if (!r.ok) {
+    res.status(502).json({ error: 'cognition_unreachable', message: r.error });
+    return;
+  }
+  res.json(r);
+});
+
+app.get('/api/cognition/state', async (_req, res) => {
+  const data = await cognition.getState();
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.delete('/api/cognition/state', async (_req, res) => {
+  const ok = await cognition.deleteState();
+  if (!ok) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json({ status: 'ok' });
+});
+
+app.get('/api/cognition/summary', async (_req, res) => {
+  const data = await cognition.getSummary();
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.get('/api/cognition/explain', async (req, res) => {
+  const ctx = (req.query.context as string | undefined) ?? 'default';
+  const data = await cognition.explain(ctx);
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.post('/api/cognition/forget', async (req, res) => {
+  const itemId = req.body?.item_id;
+  if (typeof itemId !== 'string' || !itemId) {
+    res.status(400).json({ error: 'bad_request', message: 'item_id required' });
+    return;
+  }
+  const ok = await cognition.forget(itemId);
+  if (!ok) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json({ status: 'ok' });
+});
+
+app.post('/api/cognition/freeze', async (req, res) => {
+  const patternId = req.body?.pattern_id;
+  if (typeof patternId !== 'string' || !patternId) {
+    res.status(400).json({ error: 'bad_request', message: 'pattern_id required' });
+    return;
+  }
+  const ok = await cognition.freeze(patternId);
+  if (!ok) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json({ status: 'ok' });
+});
+
+app.post('/api/cognition/unfreeze', async (req, res) => {
+  const patternId = req.body?.pattern_id;
+  if (typeof patternId !== 'string' || !patternId) {
+    res.status(400).json({ error: 'bad_request', message: 'pattern_id required' });
+    return;
+  }
+  const ok = await cognition.unfreeze(patternId);
+  if (!ok) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json({ status: 'ok' });
+});
+
+app.get('/api/cognition/users', async (_req, res) => {
+  const data = await cognition.listUsers();
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.get('/api/cognition/metrics', async (_req, res) => {
+  const data = await cognition.getMetrics();
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.get('/api/cognition/settings', async (_req, res) => {
+  const data = await cognition.getCognitionSettings();
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.put('/api/cognition/settings', async (req, res) => {
+  if (!req.body || typeof req.body !== 'object') {
+    res.status(400).json({ error: 'bad_request', message: 'body must be a non-empty object' });
+    return;
+  }
+  const data = await cognition.putCognitionSettings(req.body);
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
+});
+
+app.post('/api/cognition/replay', async (req, res) => {
+  if (!Array.isArray(req.body?.conversations)) {
+    res.status(400).json({ error: 'bad_request', message: 'conversations[] required' });
+    return;
+  }
+  const data = await cognition.replay(req.body.conversations, {
+    force: req.body.force,
+    persist: req.body.persist,
+    fromEmpty: req.body.from_empty,
+  });
+  if (data === null) {
+    res.status(502).json({ error: 'cognition_unreachable' });
+    return;
+  }
+  res.json(data);
 });
 
 // === 测试辅助：读取当前 abort registry 状态（仅 mock 模式开放）===

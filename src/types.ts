@@ -58,6 +58,11 @@ export interface Message {
   // 仅供下一轮请求按 provider=openrouter 分支回灌给 LLM 维持思考连续性，不参与渲染——
   // 渲染统一走 reasoningContent（已由 SSE 解析层把各家协议拍平为纯文本）。
   reasoningDetails?: ReasoningDetail[] | null;
+  // 可选：assistant 消息生成时所采用的 cognition persona_prompt 版本号。
+  // cognition (Alter) 用此字段做"反污染"——同一 version 的多条 assistant 输出被识别为同一画像周期产物，
+  // 避免 cognition 把自己输出的 directive 又当成新观测来归纳，形成回路。
+  // 取值由 cognition-client 的 lastPersonaVersion 缓存决定；未启用 cognition 时为 'v0'。
+  personaVersion?: string | null;
   createdAt: string;
 }
 
@@ -91,6 +96,21 @@ export interface Settings {
   // provider 路由 enum：决定请求体 reasoning 字段格式 + 是否回填历史 reasoning_details
   provider: SettingsProvider;
   privacyAcknowledged: boolean;
+  // === Cognition (Alter) 集成字段 ===
+  // 是否启用用户认知建模；关闭时所有 cognition 调用 no-op，等同纯静态 system prompt
+  cognitionEnabled: boolean;
+  // Alter HTTP 服务地址（用户用 docker compose 自行启动）
+  cognitionBaseUrl: string;
+  // 在 Alter 内部用作 ProfileState 主键；推荐填邮箱（跨设备稳定）
+  cognitionUserId: string;
+  // 异步缓存策略：每次 sendMessage 直接读这条 personaPrompt，cycle 在后台刷新缓存
+  cognitionLastPersonaPrompt: string;
+  // 给 Message.personaVersion 用；按 lastCycleAt.toString(36) 生成
+  cognitionLastPersonaVersion: string;
+  // 上次 cycle 输出的 routing context（default / coding / decision_making / emotional ...）
+  cognitionLastContext: string;
+  // 上次 cycle 完成时间（ms 时间戳）；0 = 从未完成
+  cognitionLastCycleAt: number;
 }
 
 export type ThinkingEffort = 'low' | 'medium' | 'high';
@@ -177,6 +197,9 @@ export interface LLMMessage {
   toolCalls?: LLMToolCall[];
   // 仅 role='tool' 时填写——把工具结果回灌时的 OpenAI 协议关联字段
   toolCallId?: string;
+  // 仅 role='assistant'：cognition (Alter) 反污染机制要求 assistant 消息携带生成时的 persona_prompt 版本号。
+  // 不写入 OpenAI 请求体（toOpenAIMessage 不读此字段）；仅在 cognition-client.buildCycleTurns 透传到 /v1/cycle
+  personaVersion?: string | null;
 }
 
 // 一次工具调用的完整描述（OpenAI Function Calling 协议聚合后的形态）

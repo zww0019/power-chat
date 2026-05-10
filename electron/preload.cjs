@@ -20,4 +20,10 @@ contextBridge.exposeInMainWorld('powerChat', {
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },
+
+  // 让渲染进程在系统默认浏览器打开外链——cognition 控制台等场景使用。
+  // 主进程会校验只允许 http(s) URL（见 ipc.ts shell-open-external handler）
+  openExternal(url) {
+    return ipcRenderer.invoke('shell-open-external', url);
+  },
 });

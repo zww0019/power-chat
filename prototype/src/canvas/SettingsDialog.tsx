@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Loader2, Brain, ExternalLink } from 'lucide-react';
 import { api } from '../api/client';
 import type { Settings, SettingsProvider, ThinkingEffort } from '../types';
 import { color, text, space, radius, font, motion } from '../styles/theme';
@@ -19,6 +19,16 @@ interface FormState {
   thinkingModeEnabled: boolean;
   thinkingEffort: ThinkingEffort;
   provider: SettingsProvider;
+  // === cognition (Alter) 集成 ===
+  cognitionEnabled: boolean;
+  cognitionBaseUrl: string;
+  cognitionUserId: string;
+}
+
+// cognition 服务连通测试结果（与主模型 testConnection 同形）
+interface CognitionTestResult {
+  status: 'idle' | 'testing' | 'ok' | 'error';
+  message?: string;
 }
 
 const PROVIDER_OPTIONS: { value: SettingsProvider; label: string }[] = [
@@ -53,12 +63,16 @@ export function SettingsDialog({ open, onClose }: Props) {
     thinkingModeEnabled: false,
     thinkingEffort: 'medium',
     provider: 'custom',
+    cognitionEnabled: true,
+    cognitionBaseUrl: 'http://localhost:8000',
+    cognitionUserId: '',
   });
   const [maskedKey, setMaskedKey] = useState('');
   const [maskedTavilyKey, setMaskedTavilyKey] = useState('');
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [tavilyKeyDirty, setTavilyKeyDirty] = useState(false);
   const [test, setTest] = useState<TestResult>({ status: 'idle', models: [] });
+  const [cognitionTest, setCognitionTest] = useState<CognitionTestResult>({ status: 'idle' });
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -68,6 +82,7 @@ export function SettingsDialog({ open, onClose }: Props) {
     setApiKeyDirty(false);
     setTavilyKeyDirty(false);
     setTest({ status: 'idle', models: [] });
+    setCognitionTest({ status: 'idle' });
     api.getSettings()
       .then((s) => {
         setForm({
@@ -80,6 +95,9 @@ export function SettingsDialog({ open, onClose }: Props) {
           // 旧 db.json 缺字段时后端 getSettings 已按 baseURL 推断 + 兜底，前端直接信任返回值
           thinkingEffort: (s.thinkingEffort ?? 'medium') as ThinkingEffort,
           provider: (s.provider ?? 'custom') as SettingsProvider,
+          cognitionEnabled: s.cognitionEnabled ?? true,
+          cognitionBaseUrl: s.cognitionBaseUrl ?? 'http://localhost:8000',
+          cognitionUserId: s.cognitionUserId ?? '',
         });
         setMaskedKey(s.llmApiKey ?? '');
         setMaskedTavilyKey(s.tavilyApiKey ?? '');
@@ -99,11 +117,35 @@ export function SettingsDialog({ open, onClose }: Props) {
       thinkingModeEnabled: form.thinkingModeEnabled,
       thinkingEffort: form.thinkingEffort,
       provider: form.provider,
+      cognitionEnabled: form.cognitionEnabled,
+      cognitionBaseUrl: form.cognitionBaseUrl,
+      cognitionUserId: form.cognitionUserId,
     };
     if (apiKeyDirty) patch.llmApiKey = form.llmApiKey;
     if (tavilyKeyDirty) patch.tavilyApiKey = form.tavilyApiKey;
     return patch;
   }
+
+  const handleTestCognition = async () => {
+    setCognitionTest({ status: 'testing' });
+    // 先保存 baseUrl 让主进程的 cognition-client 能读到最新值再 health
+    try {
+      await api.putSettings({ cognitionBaseUrl: form.cognitionBaseUrl });
+      const r = await api.cognitionHealth();
+      if (r.ok) {
+        setCognitionTest({ status: 'ok', message: '已连接 cognition 服务' });
+      } else {
+        setCognitionTest({ status: 'error', message: r.error ?? 'cognition 服务不可达' });
+      }
+    } catch (e: any) {
+      setCognitionTest({ status: 'error', message: e.message ?? String(e) });
+    }
+  };
+
+  const handleOpenCognitionPanel = async () => {
+    const url = form.cognitionBaseUrl || 'http://localhost:8000';
+    await api.openExternal(url);
+  };
 
   const handleTest = async () => {
     if (!canTest) return;
@@ -279,6 +321,98 @@ export function SettingsDialog({ open, onClose }: Props) {
             {test.message}
           </span>
         )}
+      </div>
+
+      {/* === 认知建模（Alter 插件）分组 ===
+          独立 docker 服务，需用户自行启动；服务不可达时主对话静默走缓存兜底 */}
+      <div
+        style={{
+          marginTop: space.s4,
+          marginBottom: space.s3,
+          padding: `${space.s3}px ${space.s3}px`,
+          border: `0.5px solid ${color.ink300}`,
+          borderRadius: radius.md,
+          background: 'rgba(0,0,0,0.02)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: space.s3 }}>
+          <Brain size={15} strokeWidth={1.8} style={{ color: color.accent500 }} />
+          <span style={{ fontSize: text.sm, fontWeight: 600, color: color.ink800 }}>认知建模（Alter）</span>
+          <span style={{ fontSize: text.xs, color: color.ink500, marginLeft: 'auto' }}>
+            为主模型注入用户思维风格指令
+          </span>
+        </div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: `${space.s2}px 0`, cursor: 'pointer', fontSize: text.sm }}>
+          <input
+            type="checkbox"
+            checked={form.cognitionEnabled}
+            onChange={(e) => setForm({ ...form, cognitionEnabled: e.target.checked })}
+            style={{ width: 16, height: 16, accentColor: color.accent500 }}
+          />
+          <span style={{ color: color.ink800 }}>启用 cognition 反思循环</span>
+        </label>
+
+        <Field label="服务地址" hint="cognition HTTP 服务的根地址。本地默认用 docker compose 起在 :8000，远程部署时改这里">
+          <input
+            value={form.cognitionBaseUrl}
+            onChange={(e) => setForm({ ...form, cognitionBaseUrl: e.target.value })}
+            placeholder="http://localhost:8000"
+            style={inputStyle}
+          />
+        </Field>
+
+        <Field label="用户 ID" hint="cognition 用此字段在 SQLite 里隔离不同用户的画像。推荐填邮箱（跨设备稳定）">
+          <input
+            value={form.cognitionUserId}
+            onChange={(e) => setForm({ ...form, cognitionUserId: e.target.value })}
+            placeholder="例如 your-email@example.com"
+            style={inputStyle}
+          />
+        </Field>
+
+        <div style={{ minHeight: 22, fontSize: text.sm, marginBottom: space.s2 }}>
+          {cognitionTest.status === 'testing' && (
+            <span style={{ color: color.ink500, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-flex', animation: 'spin 1s linear infinite' }}>
+                <Loader2 size={14} strokeWidth={2} />
+              </span>
+              正在测试连接…
+            </span>
+          )}
+          {cognitionTest.status === 'ok' && (
+            <span style={{ color: color.success, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <CheckCircle2 size={14} strokeWidth={2} />
+              {cognitionTest.message}
+            </span>
+          )}
+          {cognitionTest.status === 'error' && (
+            <span style={{ color: color.danger, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <AlertCircle size={14} strokeWidth={2} />
+              {cognitionTest.message}
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: space.s2 }}>
+          <DialogButton
+            variant="secondary"
+            onClick={handleTestCognition}
+            disabled={!form.cognitionBaseUrl || cognitionTest.status === 'testing' || saving}
+          >
+            测试连接
+          </DialogButton>
+          <DialogButton
+            variant="secondary"
+            onClick={handleOpenCognitionPanel}
+            disabled={!form.cognitionBaseUrl || saving}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <ExternalLink size={13} strokeWidth={2} />
+              打开控制台
+            </span>
+          </DialogButton>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: space.s2, marginTop: space.s4, justifyContent: 'flex-end' }}>

@@ -17,6 +17,15 @@ const DEFAULT_SETTINGS: Settings = {
   // provider 路由 enum：默认 custom，旧 db.json 升级路径会按 baseURL 启发式推断
   provider: 'custom',
   privacyAcknowledged: false,
+  // Cognition (Alter) 默认开启 + 指向本地 docker 起的 8000 端口；
+  // userId 默认空字符串——首次启动 UI 会引导填入邮箱后再发起 cycle
+  cognitionEnabled: true,
+  cognitionBaseUrl: 'http://localhost:8000',
+  cognitionUserId: '',
+  cognitionLastPersonaPrompt: '',
+  cognitionLastPersonaVersion: 'v0',
+  cognitionLastContext: 'default',
+  cognitionLastCycleAt: 0,
 };
 
 // 由 baseURL 启发式推断 provider；仅 stored 缺字段或 baseURL 变更时使用
