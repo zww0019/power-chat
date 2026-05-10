@@ -358,13 +358,25 @@ export default function App() {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ZOOM_K = 0.0015;       // 指数映射系数：每像素滚动对应恒定百分比缩放
-    const DELTA_CLAMP = 50;      // 设备归一化：触控板≈±3、鼠标≈±100~150，clamp 到统一量级
+    // 鼠标滚轮单次 deltaY 通常 ±100~150，触控板捏合（macOS Chromium 合成的 wheel+ctrlKey）
+    // 单次 deltaY 是浮点小数 ±3 量级。同一个系数无法同时让两类设备体感正常：
+    // 0.0015 对鼠标=单步 ~15%（合适），对触控板=单步 ~0.5%（30 次手势才累积 15%，体感"几乎不动"）。
+    // 因此按设备分路：触控板用更激进的系数补偿其每次事件极小的 deltaY。
+    const ZOOM_K_MOUSE = 0.0015;
+    const ZOOM_K_TOUCHPAD = 0.008;
+    // DELTA_CLAMP_MOUSE 仅对鼠标路径有意义：防止 deltaMode=1（行）或某些驱动一次给 ±200+ 导致单步过猛。
+    // 触控板原始 deltaY 远小于 50，clamp 对其等同恒等映射，反而妨碍按设备分路时的语义清晰，故仅鼠标路径生效。
+    const DELTA_CLAMP_MOUSE = 50;
     // 150ms 比典型触控板惯性滚动（约 300–500ms）短得多，但比单次 RAF（16ms）长两个数量级，
     // 足以合并一次连续滑动的全部事件，同时不让用户感知到"状态落盘延迟"。
     const PERSIST_DEBOUNCE = 150;
 
-    const accum = { zoomDeltaY: 0, panDx: 0, panDy: 0, pivotX: 0, pivotY: 0 };
+    // zoomDevice：本批次最后一次 wheel 事件来源（'touchpad' | 'mouse'）。混用罕见，
+    // 按最后一次决定本帧用哪套系数即可，无需更复杂的加权。
+    const accum: {
+      zoomDeltaY: number; panDx: number; panDy: number;
+      pivotX: number; pivotY: number; zoomDevice: 'touchpad' | 'mouse';
+    } = { zoomDeltaY: 0, panDx: 0, panDy: 0, pivotX: 0, pivotY: 0, zoomDevice: 'mouse' };
     let rafId: number | null = null;
     let persistTimer: number | null = null;
 
@@ -377,8 +389,7 @@ export default function App() {
       persistTimer = window.setTimeout(flushPersist, PERSIST_DEBOUNCE);
     };
 
-    // RAF 帧回调：把本帧内累积的所有 wheel 事件合并为一次状态更新。
-    // 命名为 flush 以区别于 flushPersist——前者刷新 React state（驱动渲染），
+    // flush 命名区别于 flushPersist：前者刷新 React state（驱动渲染），
     // 后者刷新 zustand store（驱动持久化），两者时机不同不可混淆。
     const flush = () => {
       rafId = null;
@@ -387,9 +398,13 @@ export default function App() {
       let nextZoom = zoomRef.current;
 
       if (accum.zoomDeltaY !== 0) {
-        const dy = Math.max(-DELTA_CLAMP, Math.min(DELTA_CLAMP, accum.zoomDeltaY));
-        // 指数映射：避免线性加法在高缩放下"加速失控"
-        nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomRef.current * Math.exp(-dy * ZOOM_K)));
+        const isTouchpad = accum.zoomDevice === 'touchpad';
+        const k = isTouchpad ? ZOOM_K_TOUCHPAD : ZOOM_K_MOUSE;
+        const dy = isTouchpad
+          ? accum.zoomDeltaY
+          : Math.max(-DELTA_CLAMP_MOUSE, Math.min(DELTA_CLAMP_MOUSE, accum.zoomDeltaY));
+        // 指数映射而非线性加法：线性 zoom+=delta*k 在高倍率下放大/缩小步长不对称（乘法感知应对称），exp 保证对称
+        nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomRef.current * Math.exp(-dy * k)));
         // 围绕鼠标基点缩放：保持 pivot 处的逻辑坐标不变，鼠标"贴住"画布内容
         // 推导：logicCoord = (pivot - v) / zoom；newV = pivot - logicCoord * nextZoom
         //        化简得 newV = pivot - (pivot - v) * (nextZoom / zoom)
@@ -420,8 +435,12 @@ export default function App() {
       if (target?.closest?.('[data-canvas-node-scroll]') && !(e.ctrlKey || e.metaKey)) return;
 
       e.preventDefault();
-      const rect = el.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey) {
+        // 设备识别：deltaMode=0（像素）+ |deltaY|<50 判为触控板。macOS 触控板捏合 Chromium 合成的
+        // wheel 事件 deltaY 是 ±2~±8 的浮点数，鼠标滚轮通常 ±100~150 整数；50 是经验阈值，可清晰区分。
+        // getBoundingClientRect 仅缩放路径需要，移入此分支避免 pan 路径触发不必要的 DOM 布局查询。
+        const rect = el.getBoundingClientRect();
+        accum.zoomDevice = (e.deltaMode === 0 && Math.abs(e.deltaY) < 50) ? 'touchpad' : 'mouse';
         accum.zoomDeltaY += e.deltaY;
         accum.pivotX = e.clientX - rect.left;
         accum.pivotY = e.clientY - rect.top;
