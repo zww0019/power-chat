@@ -178,3 +178,30 @@ node -e "const p = require('./electron/package.json'); console.log(p.author.name
 # 期望输出: zww <ddfeww86@gmail.com>
 ```
 输出符合 `name <email>` 格式即说明 deb maintainer 字段会被正确生成。
+
+## 10. 严禁同名 .js 与 .ts 共存（蔽源）
+
+**约束**：`src/modules/`、`prototype/src/`、`electron/src/`、`mock-server/src/` 等所有 TypeScript 源目录中，**不得**出现与某 `.ts` 文件同名的 `.js` 文件。一旦发现立即删除并重建产物。
+
+**Why**：esbuild / Vite / vitest 解析 ESM 风格的 `import './x.js'` 时遵循同一规则——
+
+1. 先按字面路径找 `x.js`，若磁盘上存在真实文件 → 直接使用，不再尝试 TS 后缀替换
+2. 找不到才回退 `.js → .ts` 替换（TS 项目的标准 ESM 习惯）
+
+仓库里残留的陈旧 `tsc` 编译产物（`x.js`）会**蔽掉**同名的新 `x.ts`，让 bundle 实际打包的是过时代码。具体踩过的坑：
+
+- `src/modules/persistence.js` 是多项目改造前的旧版（DEFAULT_DB 缺 `projects` 字段），蔽掉了多项目 commit 后的新 `persistence.ts`，导致 `Object.values(db.projects)` 在 `undefined` 上抛错 → 首页加载失败 `[500] internal: Cannot convert undefined or null to object`
+- `src/modules/settings.js` 缺 cognition 系列默认字段，蔽掉新 `settings.ts` 后 cognition 配置首次启动会拿不到默认值
+
+**自检命令**（每次大重构 / 改 DEFAULT_* 常量后跑一遍）：
+
+```bash
+for d in src/modules src/modules/tools prototype/src electron/src mock-server/src; do
+  find "$d" -maxdepth 5 -name "*.js" -type f 2>/dev/null | while read f; do
+    [ -f "${f%.js}.ts" ] || [ -f "${f%.js}.tsx" ] && echo "SHADOW: $f"
+  done
+done
+# 期望无输出
+```
+
+**根因防御**：`tsconfig.json` 设 `"noEmit": true`（避免 tsc 误产出 `.js`）；CI 流水线加上自检命令兜底。手写的 `.js`（如 preload）允许保留，但**不得**与 `.ts` 同名。

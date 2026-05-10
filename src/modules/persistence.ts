@@ -132,8 +132,11 @@ let adapter: PersistenceAdapter | null = null;
 export function getPersistence(): PersistenceAdapter {
   if (adapter) return adapter;
   // POWER_CHAT_DB 测试时指向临时文件，开发时默认在仓库根目录的 .data/db.json
-  const dbPath = process.env.POWER_CHAT_DB
-    ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../.data/db.json');
+  // CJS/ESM 双兼容：esbuild bundle 到 CJS 时 __dirname 已注入；ESM 运行时用 import.meta.url
+  const dirPath = typeof __dirname !== 'undefined'
+    ? __dirname
+    : dirname(fileURLToPath(import.meta.url));
+  const dbPath = process.env.POWER_CHAT_DB ?? resolve(dirPath, '../../.data/db.json');
   adapter = new FileAdapter(dbPath);
   return adapter;
 }
