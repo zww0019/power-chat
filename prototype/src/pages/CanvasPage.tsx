@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
-import { Sparkles, HelpCircle, Settings as SettingsIcon, MousePointerClick, Minimize2, Maximize2, PenLine, ArrowLeft } from 'lucide-react';
+import { Sparkles, MousePointerClick, Minimize2, Maximize2, PenLine, ArrowLeft } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 import { useViewStore } from '../store/viewStore';
 import { useProjectStore } from '../store/projectStore';
@@ -8,8 +8,6 @@ import { CanvasNode } from '../canvas/Node';
 import { EdgeLine } from '../canvas/Edge';
 import { RefinePopover } from '../canvas/RefinePopover';
 import { WritePopover } from '../canvas/WritePopover';
-import { SettingsDialog } from '../canvas/SettingsDialog';
-import { HelpDialog } from '../canvas/HelpDialog';
 import { NodeFullscreenModal } from '../canvas/NodeFullscreenModal';
 import { Minimap } from '../canvas/Minimap';
 import { ToastContainer } from '../canvas/ToastContainer';
@@ -103,9 +101,6 @@ export function CanvasPage({ projectId }: { projectId: string }) {
 
   const [refinePos, setRefinePos] = useState<{ x: number; y: number } | null>(null);
   const [writePos, setWritePos] = useState<{ x: number; y: number } | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [cognitionStatus, setCognitionStatus] = useState<'unknown' | 'disabled' | 'ok' | 'error'>('unknown');
 
   // 切换/挂载项目时执行：reset → 加载视口 → hydrate
   useEffect(() => {
@@ -140,38 +135,6 @@ export function CanvasPage({ projectId }: { projectId: string }) {
     const fit = computeFitToNodesViewport(allNodes, window.innerWidth, window.innerHeight);
     setSystemViewport(fit.viewportX, fit.viewportY, fit.viewportZoom);
   }, [hydrated, userHasMovedViewport, setSystemViewport]);
-
-  // 启动后检测是否已配置 LLM；未配置则强制弹出 SettingsDialog
-  useEffect(() => {
-    if (!hydrated) return;
-    api.getSettings().then((s) => {
-      if (!s.llmBaseUrl || !s.llmModel || !s.llmApiKey) {
-        setSettingsOpen(true);
-      }
-    }).catch((e) => console.error('getSettings failed', e));
-  }, [hydrated]);
-
-  // 启动后 + SettingsDialog 关闭时探测 cognition 服务连通状态
-  useEffect(() => {
-    if (!hydrated) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const s = await api.getSettings();
-        if (cancelled) return;
-        if (!s.cognitionEnabled) {
-          setCognitionStatus('disabled');
-          return;
-        }
-        const r = await api.cognitionHealth();
-        if (cancelled) return;
-        setCognitionStatus(r.ok ? 'ok' : 'error');
-      } catch {
-        if (!cancelled) setCognitionStatus('error');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [hydrated, settingsOpen]);
 
   // 全局键盘监听：Cmd/Ctrl+Z 撤销；Delete / Backspace 删除 selectedEdgeId 或 activeNodeId。
   useEffect(() => {
@@ -706,7 +669,7 @@ export function CanvasPage({ projectId }: { projectId: string }) {
           )}
         </div>
 
-        {/* 右：状态信息 + 帮助 / 设置 */}
+        {/* 右：状态信息 + 折叠/展开（帮助 / 设置已上提至首页） */}
         <div
           style={{
             pointerEvents: 'auto',
@@ -735,36 +698,6 @@ export function CanvasPage({ projectId }: { projectId: string }) {
           <ToolbarIconButton onClick={handleExpandAll} title="全部展开">
             <Maximize2 size={17} strokeWidth={1.6} />
           </ToolbarIconButton>
-          <ToolbarIconButton onClick={() => setHelpOpen(true)} title="帮助">
-            <HelpCircle size={17} strokeWidth={1.6} />
-          </ToolbarIconButton>
-          <div style={{ position: 'relative', display: 'inline-flex' }}>
-            <ToolbarIconButton
-              onClick={() => setSettingsOpen(true)}
-              title={
-                cognitionStatus === 'ok' ? '模型设置 · 认知建模已连接'
-                : cognitionStatus === 'error' ? '模型设置 · 认知建模服务不可达（点开查看）'
-                : cognitionStatus === 'disabled' ? '模型设置 · 认知建模已关闭'
-                : '模型设置'
-              }
-            >
-              <SettingsIcon size={17} strokeWidth={1.6} />
-            </ToolbarIconButton>
-            {(cognitionStatus === 'error' || cognitionStatus === 'disabled') && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: 4,
-                  right: 4,
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: cognitionStatus === 'error' ? color.danger : color.ink400,
-                  pointerEvents: 'none',
-                }}
-              />
-            )}
-          </div>
         </div>
       </div>
 
@@ -937,9 +870,6 @@ export function CanvasPage({ projectId }: { projectId: string }) {
           onClose={() => setWritePos(null)}
         />
       )}
-
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
 
       <NodeFullscreenModal />
 

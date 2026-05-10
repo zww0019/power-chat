@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Sparkles, Plus, FolderOpen, Pencil, Trash2 } from 'lucide-react';
+import { Sparkles, Plus, FolderOpen, Pencil, Trash2, HelpCircle, Settings as SettingsIcon } from 'lucide-react';
 import { useProjectStore } from '../store/projectStore';
 import { useViewStore } from '../store/viewStore';
 import { clearViewport } from '../store/viewportStorage';
 import { ModalShell } from '../canvas/_dialogPrimitives';
+import { SettingsDialog } from '../canvas/SettingsDialog';
+import { HelpDialog } from '../canvas/HelpDialog';
+import { api } from '../api/client';
 import type { Project } from '../types';
 import { color, text, space, radius, shadow, font, motion } from '../styles/theme';
 
@@ -25,9 +28,49 @@ export function HomePage() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // 全局设置/帮助入口：从画布层级上提到首页，画布页不再持有
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [cognitionStatus, setCognitionStatus] = useState<'unknown' | 'disabled' | 'ok' | 'error'>('unknown');
+
   useEffect(() => {
     void loadProjects();
   }, [loadProjects]);
+
+  // 仅在首次挂载时检测 LLM 配置是否完整；依赖空数组确保只跑一次，
+  // 避免 settingsOpen 每次变化都重复检测造成不必要的 getSettings 请求。
+  useEffect(() => {
+    api.getSettings().then((s) => {
+      if (!s.llmBaseUrl || !s.llmModel || !s.llmApiKey) {
+        setSettingsOpen(true);
+      }
+    }).catch((e) => console.error('getSettings failed', e));
+  }, []);
+
+  // 探测 cognition 服务连通状态：首次挂载 + 每次 SettingsDialog 关闭后复检。
+  // 依赖 settingsOpen 而非空数组：用户在设置里开启/关闭 cognition 后需要立即刷新状态角标；
+  // 用 cancelled flag 保证弹窗关闭后旧请求的回调不会覆盖新状态。
+  // 注意：setSettingsOpen(false) 会触发本 effect 再次执行，但 getSettings + cognitionHealth
+  // 均为幂等只读请求，不会产生副作用，重跑无害。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await api.getSettings();
+        if (cancelled) return;
+        if (!s.cognitionEnabled) {
+          setCognitionStatus('disabled');
+          return;
+        }
+        const r = await api.cognitionHealth();
+        if (cancelled) return;
+        setCognitionStatus(r.ok ? 'ok' : 'error');
+      } catch {
+        if (!cancelled) setCognitionStatus('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [settingsOpen]);
 
   const handleCreate = async () => {
     try {
@@ -133,6 +176,36 @@ export function HomePage() {
         <span style={{ fontSize: text.xs, color: color.ink500 }}>
           {projects.length > 0 ? `${projects.length} 个项目` : ''}
         </span>
+        <ToolbarIconButton onClick={() => setHelpOpen(true)} title="帮助">
+          <HelpCircle size={17} strokeWidth={1.6} />
+        </ToolbarIconButton>
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <ToolbarIconButton
+            onClick={() => setSettingsOpen(true)}
+            title={
+              cognitionStatus === 'ok' ? '模型设置 · 认知建模已连接'
+              : cognitionStatus === 'error' ? '模型设置 · 认知建模服务不可达（点开查看）'
+              : cognitionStatus === 'disabled' ? '模型设置 · 认知建模已关闭'
+              : '模型设置'
+            }
+          >
+            <SettingsIcon size={17} strokeWidth={1.6} />
+          </ToolbarIconButton>
+          {(cognitionStatus === 'error' || cognitionStatus === 'disabled') && (
+            <span
+              style={{
+                position: 'absolute',
+                top: 4,
+                right: 4,
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: cognitionStatus === 'error' ? color.danger : color.ink400,
+                pointerEvents: 'none',
+              }}
+            />
+          )}
+        </div>
       </div>
 
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: `${space.s7}px ${space.s7}px ${space.s8}px` }}>
@@ -236,6 +309,9 @@ export function HomePage() {
           </div>
         </ModalShell>
       )}
+
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }
@@ -459,6 +535,44 @@ function ProjectCard({
         </div>
       )}
     </div>
+  );
+}
+
+// 首页顶部条专用图标按钮（帮助 / 设置入口）。
+// 与 CanvasPage 内的同名组件实现相似但各自独立，避免跨页共享导致样式耦合；
+// 若未来抽公共组件库，两处可合并。
+function ToolbarIconButton({
+  onClick,
+  title,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        background: hover ? color.ink100 : 'transparent',
+        border: 'none',
+        width: 34,
+        height: 34,
+        borderRadius: radius.md,
+        cursor: 'pointer',
+        color: hover ? color.accent600 : color.ink600,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: `background ${motion.durFast}ms ${motion.easeInOut}, color ${motion.durFast}ms ${motion.easeInOut}`,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
