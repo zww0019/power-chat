@@ -23,6 +23,8 @@
   "build": {
     "appId": "com.powerchat.app",
     "productName": "思考画布",
+    "executableName": "power-chat",
+    "artifactName": "power-chat-${version}-${arch}.${ext}",
     "publish": null,
     "directories": { "output": "release" },
     "files": [
